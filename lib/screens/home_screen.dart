@@ -1047,7 +1047,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         _buildMenuItem(Icons.settings, '设置', () {
                           Navigator.push(
                             context,
-                            MaterialPageRoute(builder: (_) => const SettingsScreen()),
+                            MaterialPageRoute(builder: (_) => SettingsScreen()),
                           ).then((_) => setState(() {}));
                           setState(() => _showRightMenu = false);
                         }),
@@ -1095,7 +1095,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       icon: const Icon(Icons.settings, color: Colors.white),
                       onPressed: () => Navigator.push(
                         context,
-                        MaterialPageRoute(builder: (_) => const SettingsScreen()),
+                        MaterialPageRoute(builder: (_) => SettingsScreen()),
                       ),
                     ),
                   ],
@@ -1546,7 +1546,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 Navigator.pop(context);
                 Navigator.push(
                   context,
-                  MaterialPageRoute(builder: (_) => const SettingsScreen()),
+                  MaterialPageRoute(builder: (_) => SettingsScreen()),
                 );
               },
               child: const Text('去设置'),
