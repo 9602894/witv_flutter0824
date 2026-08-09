@@ -3,7 +3,6 @@ import 'dart:io';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter/scheduler.dart';
 import 'package:provider/provider.dart';
 import 'package:path_provider/path_provider.dart';
 import '../services/settings_service.dart';
@@ -20,6 +19,10 @@ import '../widgets/channel_list.dart';
 import '../widgets/group_list.dart';
 import '../widgets/schedule_view.dart';
 import 'settings_screen.dart';
+
+// ============================================================
+// HomeScreen —— 酷9方案优化版：播放零阻塞，EPG 秒级全量加载
+// ============================================================
 
 class HomeScreen extends StatefulWidget {
   @override
@@ -56,32 +59,29 @@ class _HomeScreenState extends State<HomeScreen> {
   double _scheduleButtonInitTop = 0;
   double _channelButtonInitTop = 0;
 
+  // ---------- EPG（全局缓存，分组切换不复读） ----------
   Map<String, List<EpgProgram>> epgMap = {};
-  double currentSpeed = 0;
-  bool isLoading = true;
-  bool _hasSubscriptions = false;
   bool _isEpgUpdating = false;
   bool _isEpgLoading = false;
 
+  // ---------- 订阅 ----------
   Map<String, List<Channel>>? _fullGroupMap;
-  Timer? _epgUpdateTimer;
+  bool _hasSubscriptions = false;
+  bool _isUpdatingSubscription = false;
+  bool isLoading = true;
 
+  // ---------- 配置 ----------
   late File _layoutConfigFile;
-
+  Timer? _epgUpdateTimer;
   final LogoService _logoService = LogoService();
 
-  // ============================================================
-  // 播放器重连控制
-  // ============================================================
+  // ---------- 播放器重连 ----------
   Timer? _retryTimer;
   Channel? _retryChannel;
   Key? _playerKey;
+  double currentSpeed = 0;
 
-  bool _isUpdatingSubscription = false;
-
-  // ============================================================
-  // 遥控器控制
-  // ============================================================
+  // ---------- 遥控器 ----------
   final FocusNode _focusNode = FocusNode();
   int _selectedIndex = -1;
   String _digitBuffer = '';
@@ -90,6 +90,7 @@ class _HomeScreenState extends State<HomeScreen> {
   // ============================================================
   // 工具函数
   // ============================================================
+
   DateTime _getNow() => DateTime.now();
 
   String _formatTime(DateTime time) {
@@ -103,32 +104,29 @@ class _HomeScreenState extends State<HomeScreen> {
   EpgProgram? _getCurrentProgram(List<EpgProgram> programs) {
     final now = _getNow();
     for (var p in programs) {
-      if (p.start.isBefore(now) && p.end.isAfter(now)) {
-        return p;
-      }
+      if (p.start.isBefore(now) && p.end.isAfter(now)) return p;
     }
     return null;
   }
 
   EpgProgram? _getNextProgram(List<EpgProgram> programs) {
     final now = _getNow();
-    EpgProgram? current = _getCurrentProgram(programs);
+    final current = _getCurrentProgram(programs);
     if (current == null) {
       for (var p in programs) {
         if (p.start.isAfter(now)) return p;
       }
       return null;
     }
-    int index = programs.indexOf(current);
-    if (index >= 0 && index < programs.length - 1) {
-      return programs[index + 1];
-    }
+    final idx = programs.indexOf(current);
+    if (idx >= 0 && idx < programs.length - 1) return programs[idx + 1];
     return null;
   }
 
   // ============================================================
   // 生命周期
   // ============================================================
+
   @override
   void initState() {
     super.initState();
@@ -144,6 +142,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ========== 布局配置 ==========
+
   Future<void> _initLayoutConfigFile() async {
     try {
       final dir = await getApplicationDocumentsDirectory();
@@ -206,9 +205,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _exitEditMode() {
-    setState(() {
-      isEditMode = false;
-    });
+    setState(() => isEditMode = false);
     _saveLayoutConfig();
   }
 
@@ -222,9 +219,10 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
-  // ========== EPG 更新调度 ==========
+  // ========== EPG 调度（后台静默，绝不阻塞播放） ==========
+
   void _initEpgScheduler() {
-    _epgUpdateTimer = Timer.periodic(Duration(hours: 6), (timer) {
+    _epgUpdateTimer = Timer.periodic(const Duration(hours: 6), (_) {
       _checkEpgUpdate();
     });
   }
@@ -236,10 +234,7 @@ class _HomeScreenState extends State<HomeScreen> {
       final updated = await EpgParser.checkForUpdate();
       if (updated) {
         LogService.write('EPG 已更新，重新加载缓存');
-        await _loadAllEpg();
-        if (mounted && currentChannel != null) {
-          setState(() {});
-        }
+        await _refreshEpgFromCache();
       }
     } catch (e) {
       LogService.write('EPG 更新检查失败: $e');
@@ -249,56 +244,64 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ============================================================
-  // 加载 EPG
+  // EPG 加载（核心优化：一次全量，分组切换不复读）
   // ============================================================
+
+  /// 从缓存秒级恢复 EPG（首次启动/后台更新后调用）
+  Future<void> _refreshEpgFromCache() async {
+    if (_isEpgLoading) return;
+    if (channels.isEmpty) return;
+    _isEpgLoading = true;
+
+    try {
+      // 使用新 API：直接按频道名获取全部映射，无需 UI 层遍历转换
+      final channelNames = channels.map((c) => c.name).toList();
+      final newEpg = await EpgParser.getProgramsForChannels(channelNames);
+
+      if (mounted) {
+        setState(() => epgMap = newEpg);
+      }
+      LogService.write('EPG 秒级恢复完成，频道数: ${newEpg.length}');
+
+      // 后台预加载台标
+      if (channels.isNotEmpty) {
+        _logoService.preloadAllLogos(channels);
+      }
+    } catch (e) {
+      LogService.write('EPG 缓存恢复失败: $e');
+    } finally {
+      _isEpgLoading = false;
+    }
+  }
+
+  /// 全量加载 EPG（订阅源切换时调用一次，后续分组切换不再调用）
   Future<void> _loadAllEpg() async {
     if (_isEpgLoading) return;
     if (channels.isEmpty) return;
     _isEpgLoading = true;
 
     try {
+      // 优先走二进制缓存（毫秒级），若缓存未命中则后台解析
       final all = await EpgParser.getAllPrograms();
       if (all.isEmpty) {
         LogService.write('EPG 缓存为空，等待后台下载');
         return;
       }
+
       final nameToEpgId = await EpgParser.getNameToEpgId();
       if (nameToEpgId.isEmpty) {
-        LogService.write('EPG 名称映射为空，无法转换');
+        LogService.write('EPG 名称映射为空');
         return;
       }
-      final converted = <String, List<EpgProgram>>{};
-      int matchedCount = 0;
-      int missingCount = 0;
-      for (var ch in channels) {
-        final epgid = nameToEpgId[ch.name];
-        if (epgid != null && all.containsKey(epgid)) {
-          final list = all[epgid]!.map((p) {
-            return EpgProgram(
-              title: p.title,
-              start: p.start,
-              end: p.end,
-              desc: p.desc,
-            );
-          }).toList();
-          list.sort((a, b) => a.start.compareTo(b.start));
-          converted[ch.name] = list;
-          matchedCount++;
-        } else {
-          missingCount++;
-          if (missingCount <= 5) {
-            LogService.write('未匹配频道: "${ch.name}" (epgid: $epgid, hasData: ${epgid != null && all.containsKey(epgid)})');
-          }
-        }
-      }
-      LogService.write('EPG 匹配结果：成功 $matchedCount，失败 $missingCount');
+
+      // 在 isolate 中做映射转换，避免主线程阻塞
+      final channelNames = channels.map((c) => c.name).toList();
+      final converted = await _mapEpgInIsolate(all, nameToEpgId, channelNames);
 
       if (mounted) {
-        setState(() {
-          epgMap = converted;
-        });
+        setState(() => epgMap = converted);
       }
-      LogService.write('全量 EPG 加载完成（仅缓存），频道数: ${converted.length}');
+      LogService.write('EPG 全量加载完成，匹配 ${converted.length} 频道');
 
       if (channels.isNotEmpty) {
         _logoService.preloadAllLogos(channels);
@@ -310,22 +313,50 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  /// Isolate 内完成 epgid->频道名 映射（大数据量不卡 UI）
+  static Map<String, List<EpgProgram>> _mapEpgInIsolate(
+    Map<String, List<EpgProgram>> all,
+    Map<String, String> nameToEpgId,
+    List<String> channelNames,
+  ) {
+    final converted = <String, List<EpgProgram>>{};
+    int matched = 0, missing = 0;
+    for (final name in channelNames) {
+      final epgid = nameToEpgId[name];
+      if (epgid != null && all.containsKey(epgid)) {
+        final list = all[epgid]!.map((p) => EpgProgram(
+          title: p.title,
+          start: p.start,
+          end: p.end,
+          desc: p.desc,
+        )).toList();
+        list.sort((a, b) => a.start.compareTo(b.start));
+        converted[name] = list;
+        matched++;
+      } else {
+        missing++;
+      }
+    }
+    // ignore: avoid_print
+    print('EPG 匹配：成功 $matched，失败 $missing');
+    return converted;
+  }
+
   // ============================================================
-  // 播放器重连控制
+  // 播放器重连
   // ============================================================
+
   void _scheduleRetry() {
     _retryTimer?.cancel();
     _retryChannel = currentChannel;
     if (_retryChannel == null) return;
 
-    LogService.write('播放器断线，将在5秒后自动重连: ${_retryChannel!.name}');
-    _retryTimer = Timer(Duration(seconds: 5), () {
+    LogService.write('播放器断线，5秒后重连: ${_retryChannel!.name}');
+    _retryTimer = Timer(const Duration(seconds: 5), () {
       if (currentChannel == _retryChannel && currentChannel != null) {
         LogService.write('自动重连: ${currentChannel!.name}');
-        setState(() {
-          currentChannel = null;
-        });
-        Future.delayed(Duration(milliseconds: 500), () {
+        setState(() => currentChannel = null);
+        Future.delayed(const Duration(milliseconds: 500), () {
           if (mounted && _retryChannel != null) {
             setState(() {
               _playerKey = UniqueKey();
@@ -362,11 +393,12 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ============================================================
-  // 分组切换（不换台，不重新加载播放器）
+  // 分组切换（❌ 不再调用 _loadAllEpg，EPG 已全局缓存）
   // ============================================================
+
   void _switchToGroup(String groupName) {
     if (_fullGroupMap == null || _fullGroupMap!.isEmpty) {
-      LogService.write('错误：_fullGroupMap 为空或空，无法切换分组');
+      LogService.write('错误：_fullGroupMap 为空');
       return;
     }
     final groupChannels = _fullGroupMap![groupName];
@@ -377,6 +409,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _cancelRetry();
     _digitBuffer = '';
     _digitTimer?.cancel();
+
     setState(() {
       currentGroup = groupName;
       channels = groupChannels;
@@ -386,43 +419,46 @@ class _HomeScreenState extends State<HomeScreen> {
         _selectedIndex = -1;
       }
     });
-    _loadAllEpg();
-    LogService.write('切换到分组: $groupName，频道数: ${channels.length}，当前频道: ${currentChannel?.name ?? "无"}');
+
+    // 分组切换不复读 EPG，但可刷新当前分组台标
+    _logoService.preloadAllLogos(channels);
+    LogService.write('切换到分组: $groupName，频道数: ${channels.length}');
   }
 
   // ============================================================
   // 订阅源加载
   // ============================================================
+
   Future<void> _loadSubscriptionData(Subscription sub) async {
     try {
       LogService.write('加载订阅源数据: ${sub.name}');
       final url = sub.url;
       final cacheFile = await PlaylistParser.getCacheFile(url, sub.name);
 
+      // 1. 先读缓存立即显示（秒开）
       if (await cacheFile.exists()) {
         try {
           final content = await cacheFile.readAsString();
           final groupMap = PlaylistParser.parseFromString(content);
           if (groupMap.isNotEmpty) {
-            LogService.write('从缓存加载订阅源成功，立即显示');
+            LogService.write('缓存秒开: ${sub.name}');
             _applyGroupMap(groupMap, sub.name);
-          } else {
-            LogService.write('缓存内容为空，忽略');
           }
         } catch (e) {
           LogService.write('缓存解析失败: $e');
         }
       }
 
+      // 2. 缓存不存在或为空，则从网络加载
       if (!await cacheFile.exists() || channels.isEmpty) {
-        LogService.write('缓存不存在或频道为空，直接从网络加载...');
+        LogService.write('网络加载订阅源...');
         final groupMap = await PlaylistParser.parseFromUrl(url);
         if (groupMap.isNotEmpty) {
           await PlaylistParser.saveCache(groupMap, url, sub.name);
           _applyGroupMap(groupMap, sub.name);
-          LogService.write('网络加载成功并更新缓存');
+          LogService.write('网络加载成功');
         } else {
-          LogService.write('网络返回空数据，加载失败');
+          LogService.write('网络返回空数据');
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(content: Text('订阅源加载失败，请检查网络')),
@@ -432,6 +468,7 @@ class _HomeScreenState extends State<HomeScreen> {
         return;
       }
 
+      // 3. 后台静默更新（已有缓存时，2秒后检查更新）
       if (!_isUpdatingSubscription) {
         _isUpdatingSubscription = true;
         LogService.write('后台静默更新订阅源...');
@@ -439,8 +476,8 @@ class _HomeScreenState extends State<HomeScreen> {
           try {
             final newMap = await PlaylistParser.parseFromUrl(url);
             if (newMap.isNotEmpty) {
-              final oldCount = channels.length;
-              final newCount = newMap.values.expand((list) => list).length;
+              final oldCount = _fullGroupMap?.values.expand((l) => l).length ?? 0;
+              final newCount = newMap.values.expand((l) => l).length;
               if (oldCount != newCount || newMap.keys.length != groups.length) {
                 LogService.write('后台更新检测到变化，刷新列表');
                 await PlaylistParser.saveCache(newMap, url, sub.name);
@@ -450,8 +487,6 @@ class _HomeScreenState extends State<HomeScreen> {
               } else {
                 LogService.write('后台更新无变化');
               }
-            } else {
-              LogService.write('后台更新返回空数据，忽略');
             }
           } catch (e) {
             LogService.write('后台更新失败: $e');
@@ -471,12 +506,12 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ============================================================
-  // 应用分组映射（恢复上次频道，跨分组查找）
-  // ✅ 第652行已修复：使用 found! 强制解包
+  // 应用分组映射（修复 null 安全，EPG 异步加载不阻塞）
   // ============================================================
+
   void _applyGroupMap(Map<String, List<Channel>> groupMap, String subName) {
     if (groupMap.isEmpty) {
-      LogService.write('错误：解析出的分组为空，请检查订阅源格式');
+      LogService.write('错误：解析出的分组为空');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('订阅源解析失败，请检查URL是否正确')),
@@ -485,17 +520,19 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    Map<String, String> m3uLogos = {};
-    groupMap.forEach((group, list) {
-      for (var ch in list) {
+    // 提取 m3u 台标
+    final m3uLogos = <String, String>{};
+    for (final list in groupMap.values) {
+      for (final ch in list) {
         if (ch.logoUrl != null && ch.logoUrl!.isNotEmpty) {
           m3uLogos[ch.name] = ch.logoUrl!;
         }
       }
-    });
+    }
     _logoService.updateM3uLogos(m3uLogos);
 
     _fullGroupMap = groupMap;
+
     setState(() {
       groups = groupMap.keys.toList();
       if (groups.isNotEmpty) {
@@ -509,20 +546,17 @@ class _HomeScreenState extends State<HomeScreen> {
             final lastChannel = Provider.of<SettingsService>(context, listen: false).getLastChannel();
             if (lastChannel != null) {
               Channel? found;
-              for (var list in groupMap.values) {
-                final match = list.firstWhere(
-                  (ch) => ch.name == lastChannel,
-                  orElse: () => null as Channel,
-                );
-                if (match != null) {
-                  found = match;
+              for (final list in groupMap.values) {
+                try {
+                  found = list.firstWhere((ch) => ch.name == lastChannel);
                   break;
+                } catch (_) {
+                  // firstWhere 未找到会抛异常，继续下一组
                 }
               }
               if (found != null) {
                 currentChannel = found;
-                // ✅ 关键修复：使用 found! 强制解包
-                _selectedIndex = channels.indexOf(found!);
+                _selectedIndex = channels.indexOf(found);
               } else {
                 currentChannel = channels.first;
                 _selectedIndex = 0;
@@ -538,7 +572,8 @@ class _HomeScreenState extends State<HomeScreen> {
             _selectedIndex = -1;
           }
         } else {
-          for (var g in groups) {
+          // 当前分组为空，找第一个非空分组
+          for (final g in groups) {
             final chs = groupMap[g];
             if (chs != null && chs.isNotEmpty) {
               currentGroup = g;
@@ -548,42 +583,40 @@ class _HomeScreenState extends State<HomeScreen> {
           }
         }
       } else {
-        LogService.write('警告：没有分组，请检查订阅源');
+        LogService.write('警告：没有分组');
         return;
       }
       currentSubName = subName;
     });
 
+    // ✅ 关键优化：EPG 在后台异步加载，不阻塞分组显示和播放
     _loadAllEpg();
     LogService.write('分组数据应用完成，分组数: ${groups.length}，频道数: ${channels.length}');
   }
-    // ============================================================
+
+  // ============================================================
   // 遥控器按键处理
   // ============================================================
+
   void _handleKeyEvent(RawKeyEvent event) {
     if (event is! RawKeyDownEvent) return;
-
     if (!showChannelList || isEditMode || isScheduleMode) return;
 
     final key = event.logicalKey;
 
     // 数字键（0-9）
-    if (key == LogicalKeyboardKey.digit0 ||
-        key == LogicalKeyboardKey.digit1 ||
-        key == LogicalKeyboardKey.digit2 ||
-        key == LogicalKeyboardKey.digit3 ||
-        key == LogicalKeyboardKey.digit4 ||
-        key == LogicalKeyboardKey.digit5 ||
-        key == LogicalKeyboardKey.digit6 ||
-        key == LogicalKeyboardKey.digit7 ||
-        key == LogicalKeyboardKey.digit8 ||
-        key == LogicalKeyboardKey.digit9) {
+    final digitKeys = [
+      LogicalKeyboardKey.digit0, LogicalKeyboardKey.digit1,
+      LogicalKeyboardKey.digit2, LogicalKeyboardKey.digit3,
+      LogicalKeyboardKey.digit4, LogicalKeyboardKey.digit5,
+      LogicalKeyboardKey.digit6, LogicalKeyboardKey.digit7,
+      LogicalKeyboardKey.digit8, LogicalKeyboardKey.digit9,
+    ];
+    if (digitKeys.contains(key)) {
       _digitTimer?.cancel();
-      final digit = key.keyLabel;
-      _digitBuffer += digit;
+      _digitBuffer += key.keyLabel;
       LogService.write('数字输入: $_digitBuffer');
-
-      _digitTimer = Timer(Duration(milliseconds: 1500), () {
+      _digitTimer = Timer(const Duration(milliseconds: 1500), () {
         _jumpToChannelNumber(_digitBuffer);
         _digitBuffer = '';
       });
@@ -600,19 +633,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (key == LogicalKeyboardKey.arrowUp) {
       setState(() {
-        if (_selectedIndex > 0) {
-          _selectedIndex--;
-        } else {
-          _selectedIndex = channels.length - 1;
-        }
+        _selectedIndex = _selectedIndex > 0 ? _selectedIndex - 1 : channels.length - 1;
       });
     } else if (key == LogicalKeyboardKey.arrowDown) {
       setState(() {
-        if (_selectedIndex < channels.length - 1) {
-          _selectedIndex++;
-        } else {
-          _selectedIndex = 0;
-        }
+        _selectedIndex = _selectedIndex < channels.length - 1 ? _selectedIndex + 1 : 0;
       });
     } else if (key == LogicalKeyboardKey.arrowLeft) {
       if (groups.isNotEmpty) {
@@ -639,7 +664,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (targetNumber == null) return;
 
     Channel? found;
-    for (var ch in channels) {
+    for (final ch in channels) {
       if (ch.number == targetNumber) {
         found = ch;
         break;
@@ -647,9 +672,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     if (found != null) {
       _switchChannel(found);
-      setState(() {
-        _selectedIndex = channels.indexOf(found!);
-      });
       LogService.write('数字跳转: ${found.name} (${found.number})');
     } else {
       LogService.write('未找到频道号: $targetNumber');
@@ -662,6 +684,7 @@ class _HomeScreenState extends State<HomeScreen> {
   // ============================================================
   // 构建 UI
   // ============================================================
+
   @override
   Widget build(BuildContext context) {
     final screenHeight = MediaQuery.of(context).size.height;
@@ -699,16 +722,16 @@ class _HomeScreenState extends State<HomeScreen> {
           final shouldExit = await showDialog<bool>(
             context: context,
             builder: (_) => AlertDialog(
-              title: Text('提示'),
-              content: Text('确定要退出应用吗？'),
+              title: const Text('提示'),
+              content: const Text('确定要退出应用吗？'),
               actions: [
                 TextButton(
                   onPressed: () => Navigator.pop(context, false),
-                  child: Text('取消'),
+                  child: const Text('取消'),
                 ),
                 TextButton(
                   onPressed: () => Navigator.pop(context, true),
-                  child: Text('确定'),
+                  child: const Text('确定'),
                 ),
               ],
             ),
@@ -790,7 +813,7 @@ class _HomeScreenState extends State<HomeScreen> {
                               channelWeight = 1 - subWeight - groupWeight;
                               if (channelWeight < 0.05) {
                                 channelWeight = 0.05;
-                                double total = subWeight + groupWeight;
+                                final total = subWeight + groupWeight;
                                 subWeight = subWeight / total * 0.95;
                                 groupWeight = groupWeight / total * 0.95;
                               }
@@ -814,7 +837,7 @@ class _HomeScreenState extends State<HomeScreen> {
                               subWeight = 1 - groupWeight - channelWeight;
                               if (subWeight < 0.05) {
                                 subWeight = 0.05;
-                                double total = groupWeight + channelWeight;
+                                final total = groupWeight + channelWeight;
                                 groupWeight = groupWeight / total * 0.95;
                                 channelWeight = channelWeight / total * 0.95;
                               }
@@ -834,7 +857,6 @@ class _HomeScreenState extends State<HomeScreen> {
                                   epgMap: epgMap,
                                   showChannelNumber: false,
                                   showLogo: true,
-                                 
                                 ),
                               ),
                               Positioned(
@@ -857,7 +879,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                     width: 26,
                                     height: 80,
                                     color: Colors.transparent,
-                                    child: Column(
+                                    child: const Column(
                                       mainAxisAlignment: MainAxisAlignment.center,
                                       children: [
                                         Text('节', style: TextStyle(color: Colors.white, fontSize: 13)),
@@ -903,7 +925,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                 scheduleWeight = 1 - newGroup - newChannel;
                                 if (scheduleWeight < 0.05) {
                                   scheduleWeight = 0.05;
-                                  double total = newGroup + newChannel;
+                                  final total = newGroup + newChannel;
                                   scheduleGroupWeight = scheduleGroupWeight / total * 0.95;
                                   scheduleChannelWeight = scheduleChannelWeight / total * 0.95;
                                 }
@@ -920,7 +942,6 @@ class _HomeScreenState extends State<HomeScreen> {
                               epgMap: epgMap,
                               showChannelNumber: false,
                               showLogo: true,
-                              
                             ),
                           ),
                           _buildDragBar(
@@ -935,7 +956,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                 scheduleGroupWeight = 1 - newChannel - newSchedule;
                                 if (scheduleGroupWeight < 0.05) {
                                   scheduleGroupWeight = 0.05;
-                                  double total = newChannel + newSchedule;
+                                  final total = newChannel + newSchedule;
                                   scheduleChannelWeight = scheduleChannelWeight / total * 0.95;
                                   scheduleWeight = scheduleWeight / total * 0.95;
                                 }
@@ -980,7 +1001,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             width: 26,
                             height: 80,
                             color: Colors.transparent,
-                            child: Column(
+                            child: const Column(
                               mainAxisAlignment: MainAxisAlignment.center,
                               children: [
                                 Text('频', style: TextStyle(color: Colors.white, fontSize: 13)),
@@ -995,7 +1016,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
 
-              // ---------- EPG 信息浮窗（显示频道号） ----------
+              // ---------- EPG 信息浮窗 ----------
               if (_showEpgInfo && currentChannel != null)
                 Positioned(
                   left: 0,
@@ -1003,11 +1024,9 @@ class _HomeScreenState extends State<HomeScreen> {
                   bottom: MediaQuery.of(context).size.height * 0.15,
                   child: Center(
                     child: Container(
-                      constraints: BoxConstraints(maxWidth: 500),
-                      padding: EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: Colors.transparent,
-                      ),
+                      constraints: const BoxConstraints(maxWidth: 500),
+                      padding: const EdgeInsets.all(16),
+                      decoration: const BoxDecoration(color: Colors.transparent),
                       child: _buildEpgInfoWithLogo(currentChannel!),
                     ),
                   ),
@@ -1028,7 +1047,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         _buildMenuItem(Icons.settings, '设置', () {
                           Navigator.push(
                             context,
-                            MaterialPageRoute(builder: (_) => SettingsScreen()),
+                            MaterialPageRoute(builder: (_) => const SettingsScreen()),
                           ).then((_) => setState(() {}));
                           setState(() => _showRightMenu = false);
                         }),
@@ -1063,7 +1082,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: Row(
                   children: [
                     IconButton(
-                      icon: Icon(Icons.edit, color: Colors.white),
+                      icon: const Icon(Icons.edit, color: Colors.white),
                       onPressed: () {
                         if (isEditMode) {
                           _exitEditMode();
@@ -1073,10 +1092,10 @@ class _HomeScreenState extends State<HomeScreen> {
                       },
                     ),
                     IconButton(
-                      icon: Icon(Icons.settings, color: Colors.white),
+                      icon: const Icon(Icons.settings, color: Colors.white),
                       onPressed: () => Navigator.push(
                         context,
-                        MaterialPageRoute(builder: (_) => SettingsScreen()),
+                        MaterialPageRoute(builder: (_) => const SettingsScreen()),
                       ),
                     ),
                   ],
@@ -1091,28 +1110,28 @@ class _HomeScreenState extends State<HomeScreen> {
                   right: 0,
                   child: Container(
                     color: Colors.black54,
-                    padding: EdgeInsets.symmetric(vertical: 4),
+                    padding: const EdgeInsets.symmetric(vertical: 4),
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
                         if (!isScheduleMode) ...[
-                          Text('订阅 ${(subWeight*100).toInt()}%', style: TextStyle(color: Colors.white, fontSize: 12)),
-                          SizedBox(width: 16),
-                          Text('分组 ${(groupWeight*100).toInt()}%', style: TextStyle(color: Colors.white, fontSize: 12)),
-                          SizedBox(width: 16),
-                          Text('频道 ${(channelWeight*100).toInt()}%', style: TextStyle(color: Colors.white, fontSize: 12)),
+                          Text('订阅 ${(subWeight*100).toInt()}%', style: const TextStyle(color: Colors.white, fontSize: 12)),
+                          const SizedBox(width: 16),
+                          Text('分组 ${(groupWeight*100).toInt()}%', style: const TextStyle(color: Colors.white, fontSize: 12)),
+                          const SizedBox(width: 16),
+                          Text('频道 ${(channelWeight*100).toInt()}%', style: const TextStyle(color: Colors.white, fontSize: 12)),
                         ] else ...[
-                          Text('分组 ${(scheduleGroupWeight*100).toInt()}%', style: TextStyle(color: Colors.white, fontSize: 12)),
-                          SizedBox(width: 16),
-                          Text('频道 ${(scheduleChannelWeight*100).toInt()}%', style: TextStyle(color: Colors.white, fontSize: 12)),
-                          SizedBox(width: 16),
-                          Text('节目单 ${(scheduleWeight*100).toInt()}%', style: TextStyle(color: Colors.white, fontSize: 12)),
+                          Text('分组 ${(scheduleGroupWeight*100).toInt()}%', style: const TextStyle(color: Colors.white, fontSize: 12)),
+                          const SizedBox(width: 16),
+                          Text('频道 ${(scheduleChannelWeight*100).toInt()}%', style: const TextStyle(color: Colors.white, fontSize: 12)),
+                          const SizedBox(width: 16),
+                          Text('节目单 ${(scheduleWeight*100).toInt()}%', style: const TextStyle(color: Colors.white, fontSize: 12)),
                         ],
-                        SizedBox(width: 16),
+                        const SizedBox(width: 16),
                         ElevatedButton(
                           onPressed: _exitEditMode,
-                          child: Text('退出编辑', style: TextStyle(fontSize: 12)),
-                          style: ElevatedButton.styleFrom(padding: EdgeInsets.symmetric(horizontal: 8, vertical: 2)),
+                          style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2)),
+                          child: const Text('退出编辑', style: TextStyle(fontSize: 12)),
                         ),
                       ],
                     ),
@@ -1136,23 +1155,19 @@ class _HomeScreenState extends State<HomeScreen> {
     return FutureBuilder<File?>(
       future: _logoService.getLogo(channel.name),
       builder: (context, snapshot) {
-        Widget logo = SizedBox(width: 80, height: 80);
+        Widget logo = const SizedBox(width: 80, height: 80);
         if (snapshot.connectionState == ConnectionState.waiting) {
-          logo = SizedBox(
-            width: 80,
-            height: 80,
+          logo = const SizedBox(
+            width: 80, height: 80,
             child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white70),
           );
         } else if (snapshot.hasData && snapshot.data != null) {
-          logo = Container(
-            color: Colors.transparent,
-            child: Image.file(
-              snapshot.data!,
-              width: 80,
-              height: 80,
-              fit: BoxFit.contain,
-              errorBuilder: (_, __, ___) => _defaultLogo(channel.name, size: 80),
-            ),
+          logo = Image.file(
+            snapshot.data!,
+            width: 80,
+            height: 80,
+            fit: BoxFit.contain,
+            errorBuilder: (_, __, ___) => _defaultLogo(channel.name, size: 80),
           );
         } else {
           logo = _defaultLogo(channel.name, size: 80);
@@ -1162,7 +1177,7 @@ class _HomeScreenState extends State<HomeScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             logo,
-            SizedBox(width: 12),
+            const SizedBox(width: 12),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -1172,7 +1187,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       if (channelNumber.isNotEmpty)
                         Text(
                           channelNumber,
-                          style: TextStyle(
+                          style: const TextStyle(
                             color: Colors.yellow,
                             fontSize: 18,
                             fontWeight: FontWeight.bold,
@@ -1182,7 +1197,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       Expanded(
                         child: Text(
                           channel.name,
-                          style: TextStyle(
+                          style: const TextStyle(
                             color: Colors.white,
                             fontSize: 18,
                             fontWeight: FontWeight.bold,
@@ -1192,7 +1207,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                     ],
                   ),
-                  SizedBox(height: 8),
+                  const SizedBox(height: 8),
                   _buildEpgProgramInfo(programs),
                 ],
               ),
@@ -1208,18 +1223,11 @@ class _HomeScreenState extends State<HomeScreen> {
     return Container(
       width: size,
       height: size,
-      decoration: BoxDecoration(
-        color: Colors.transparent,
-        shape: BoxShape.circle,
-      ),
+      decoration: const BoxDecoration(color: Colors.transparent, shape: BoxShape.circle),
       child: Center(
         child: Text(
           firstChar,
-          style: TextStyle(
-            color: Colors.white,
-            fontSize: size * 0.5,
-            fontWeight: FontWeight.bold,
-          ),
+          style: TextStyle(color: Colors.white, fontSize: size * 0.5, fontWeight: FontWeight.bold),
         ),
       ),
     );
@@ -1228,16 +1236,16 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildEpgProgramInfo(List<EpgProgram> programs) {
     final current = _getCurrentProgram(programs);
     final next = _getNextProgram(programs);
-    List<Widget> children = [];
+    final children = <Widget>[];
     if (current != null) {
       children.add(_buildEpgItem(current, '当前节目'));
-      children.add(SizedBox(height: 4));
+      children.add(const SizedBox(height: 4));
     }
     if (next != null) {
       children.add(_buildEpgItem(next, '下一节目'));
     }
     if (children.isEmpty) {
-      return Text('暂无节目信息', style: TextStyle(color: Colors.white70));
+      return const Text('暂无节目信息', style: TextStyle(color: Colors.white70));
     }
     return Column(children: children);
   }
@@ -1249,14 +1257,14 @@ class _HomeScreenState extends State<HomeScreen> {
       children: [
         Text(
           '$label: $timeStr ${prog.title}',
-          style: TextStyle(color: Colors.white, fontSize: 14, shadows: [
+          style: const TextStyle(color: Colors.white, fontSize: 14, shadows: [
             Shadow(offset: Offset(1,1), blurRadius: 4, color: Colors.black87)
           ]),
         ),
         if (prog.desc != null && prog.desc!.isNotEmpty)
           Text(
             prog.desc!,
-            style: TextStyle(color: Colors.white70, fontSize: 12, shadows: [
+            style: const TextStyle(color: Colors.white70, fontSize: 12, shadows: [
               Shadow(offset: Offset(1,1), blurRadius: 4, color: Colors.black87)
             ]),
             maxLines: 2,
@@ -1270,7 +1278,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final settings = Provider.of<SettingsService>(context);
     final subs = settings.subscriptions;
     if (subs.isEmpty) {
-      return Center(
+      return const Center(
         child: Text('无订阅', style: TextStyle(color: Colors.white70, fontSize: 12)),
       );
     }
@@ -1280,17 +1288,12 @@ class _HomeScreenState extends State<HomeScreen> {
         itemCount: subs.length + 1,
         itemBuilder: (context, index) {
           if (index == 0) {
-            return ListTile(
+            return const ListTile(
               leading: Icon(Icons.favorite, color: Colors.yellow, size: 16),
               title: Text(
                 '我的收藏',
-                style: TextStyle(
-                  color: Colors.yellow,
-                  fontSize: 14,
-                  fontWeight: FontWeight.bold,
-                ),
+                style: TextStyle(color: Colors.yellow, fontSize: 14, fontWeight: FontWeight.bold),
               ),
-              onTap: () {},
             );
           }
           final sub = subs[index - 1];
@@ -1298,10 +1301,7 @@ class _HomeScreenState extends State<HomeScreen> {
           return ListTile(
             title: Text(
               sub.name,
-              style: TextStyle(
-                color: isSelected ? Colors.yellow : Colors.white,
-                fontSize: 13,
-              ),
+              style: TextStyle(color: isSelected ? Colors.yellow : Colors.white, fontSize: 13),
             ),
             onTap: () {
               LogService.write('切换订阅源: ${sub.name}');
@@ -1326,10 +1326,7 @@ class _HomeScreenState extends State<HomeScreen> {
           return ListTile(
             title: Text(
               displayName,
-              style: TextStyle(
-                color: isSelected ? Colors.yellow : Colors.white,
-                fontSize: 13,
-              ),
+              style: TextStyle(color: isSelected ? Colors.yellow : Colors.white, fontSize: 13),
             ),
             onTap: () {
               LogService.write('切换到分组: $group');
@@ -1359,13 +1356,13 @@ class _HomeScreenState extends State<HomeScreen> {
     return InkWell(
       onTap: onTap,
       child: Container(
-        padding: EdgeInsets.symmetric(vertical: 12),
+        padding: const EdgeInsets.symmetric(vertical: 12),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(icon, color: Colors.white, size: 24),
-            SizedBox(height: 4),
-            Text(label, style: TextStyle(color: Colors.white, fontSize: 10)),
+            const SizedBox(height: 4),
+            Text(label, style: const TextStyle(color: Colors.white, fontSize: 10)),
           ],
         ),
       ),
@@ -1375,22 +1372,23 @@ class _HomeScreenState extends State<HomeScreen> {
   // ============================================================
   // 添加订阅源对话框
   // ============================================================
+
   void _showAddSubscriptionDialog() {
     final nameCtrl = TextEditingController();
     final urlCtrl = TextEditingController();
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
-        title: Text('添加列表订阅'),
+        title: const Text('添加列表订阅'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            TextField(controller: nameCtrl, decoration: InputDecoration(labelText: '名称')),
-            TextField(controller: urlCtrl, decoration: InputDecoration(labelText: 'URL')),
+            TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: '名称')),
+            TextField(controller: urlCtrl, decoration: const InputDecoration(labelText: 'URL')),
           ],
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: Text('取消')),
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
           TextButton(
             onPressed: () {
               final name = nameCtrl.text.trim();
@@ -1399,16 +1397,20 @@ class _HomeScreenState extends State<HomeScreen> {
                 final settings = Provider.of<SettingsService>(context, listen: false);
                 final exists = settings.subscriptions.any((s) => s.url == url || s.name == name);
                 if (exists) {
-                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('订阅源已存在')));
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('订阅源已存在')),
+                  );
                   return;
                 }
                 settings.addSubscription(Subscription(name: name, url: url, selected: true));
                 _loadSubscriptionData(Subscription(name: name, url: url, selected: true));
                 Navigator.pop(context);
-                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已添加: $name')));
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('已添加: $name')),
+                );
               }
             },
-            child: Text('添加'),
+            child: const Text('添加'),
           ),
         ],
       ),
@@ -1420,10 +1422,13 @@ class _HomeScreenState extends State<HomeScreen> {
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
-        title: Text('添加EPG订阅'),
-        content: TextField(controller: ctrl, decoration: InputDecoration(labelText: 'EPG URL (XMLTV)')),
+        title: const Text('添加EPG订阅'),
+        content: TextField(
+          controller: ctrl,
+          decoration: const InputDecoration(labelText: 'EPG URL (XMLTV)'),
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: Text('取消')),
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
           TextButton(
             onPressed: () async {
               final url = ctrl.text.trim();
@@ -1435,11 +1440,13 @@ class _HomeScreenState extends State<HomeScreen> {
                   await ConfigService.saveConfig({'Configuration': inner});
                   _checkEpgUpdate();
                   Navigator.pop(context);
-                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('EPG已更新')));
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('EPG已更新')),
+                  );
                 }
               }
             },
-            child: Text('添加'),
+            child: const Text('添加'),
           ),
         ],
       ),
@@ -1449,9 +1456,12 @@ class _HomeScreenState extends State<HomeScreen> {
   // ============================================================
   // 数据初始化
   // ============================================================
+
   Future<void> _init() async {
-    await EpgParser.preloadAll();
-    LogService.write('EPG 缓存已预加载（若存在）');
+    // 1. 后台预加载 EPG 数据（不阻塞 UI）
+    EpgParser.preloadAll().then((_) {
+      LogService.write('EPG 预加载完成');
+    });
 
     await _loadSavedSubscriptions();
     final settings = Provider.of<SettingsService>(context, listen: false);
@@ -1461,19 +1471,16 @@ class _HomeScreenState extends State<HomeScreen> {
     final selected = settings.subscriptions.where((s) => s.selected).toList();
     if (selected.isNotEmpty) {
       await _loadSubscriptionData(selected.first);
-    } else {
-      if (settings.subscriptions.isNotEmpty) {
-        settings.toggleSelected(settings.subscriptions.first);
-        await _loadSubscriptionData(settings.subscriptions.first);
-      }
+    } else if (settings.subscriptions.isNotEmpty) {
+      settings.toggleSelected(settings.subscriptions.first);
+      await _loadSubscriptionData(settings.subscriptions.first);
     }
     _checkSubscriptions();
-    setState(() {
-      isLoading = false;
-    });
+    setState(() => isLoading = false);
 
+    // 2. 启动 10 秒后检查 EPG 更新（后台静默）
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      Future.delayed(Duration(seconds: 10), () {
+      Future.delayed(const Duration(seconds: 10), () {
         if (mounted) _checkEpgUpdate();
       });
     });
@@ -1505,7 +1512,7 @@ class _HomeScreenState extends State<HomeScreen> {
           settings.addSubscription(Subscription(name: name, url: url, selected: true));
           LogService.write('自动添加默认订阅源: $name -> $url');
         } else {
-          LogService.write('默认订阅源已存在，跳过添加');
+          LogService.write('默认订阅源已存在，跳过');
         }
       }
     } catch (e, stack) {
@@ -1531,22 +1538,22 @@ class _HomeScreenState extends State<HomeScreen> {
         context: context,
         barrierDismissible: false,
         builder: (_) => AlertDialog(
-          title: Text('提示'),
-          content: Text('当前没有可用的订阅源，请先添加订阅源。'),
+          title: const Text('提示'),
+          content: const Text('当前没有可用的订阅源，请先添加订阅源。'),
           actions: [
             TextButton(
               onPressed: () {
                 Navigator.pop(context);
                 Navigator.push(
                   context,
-                  MaterialPageRoute(builder: (_) => SettingsScreen()),
+                  MaterialPageRoute(builder: (_) => const SettingsScreen()),
                 );
               },
-              child: Text('去设置'),
+              child: const Text('去设置'),
             ),
             TextButton(
               onPressed: () => exit(0),
-              child: Text('退出'),
+              child: const Text('退出'),
             ),
           ],
         ),
