@@ -190,7 +190,7 @@ class EpgParser {
   static Future<void> _loadEpgData() async {
     if (_epgDataLoaded) return;
     try {
-      String content;
+      String content = '';
       final appDocDir = await getApplicationDocumentsDirectory();
       final localFile = File(p.join(appDocDir.path, epgDataFileName));
 
