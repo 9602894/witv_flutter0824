@@ -22,7 +22,7 @@ class IjkPlayerView(
     private var pendingUrl: String? = null
     private var isSurfaceReady = false
     private var currentUrl: String? = null
-    private var decoderIndex: Int = 0  // 0=硬解, 1=软解
+    private var decoderIndex: Int = 0
 
     init {
         decoderIndex = (creationParams?.get("decoderIndex") as? Int) ?: 0
@@ -32,11 +32,10 @@ class IjkPlayerView(
                 "setUrl" -> {
                     val url = call.argument<String>("url")
                     val newDecoderIndex = call.argument<Int>("decoderIndex")
-                    val needRecreate = newDecoderIndex != null && newDecoderIndex != decoderIndex
-                    if (newDecoderIndex != null) {
+                    if (newDecoderIndex != null && newDecoderIndex != decoderIndex) {
                         decoderIndex = newDecoderIndex
                     }
-                    if (url != null && (url != currentUrl || needRecreate)) {
+                    if (url != null && url != currentUrl) {
                         currentUrl = url
                         if (isSurfaceReady) {
                             setUrl(url)
@@ -75,10 +74,61 @@ class IjkPlayerView(
         val player = IjkMediaPlayer()
 
         // ============================================================
-        // 解码器分支（SO 已自带其他所有优化参数）
+        // 【关键】Format 级别参数 —— 必须在 setDataSource 之前设置
+        // ============================================================
+
+        // 探测大小：从默认 5MB 降到 512KB，换台速度提升最明显
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "probesize", 512 * 1024L)
+
+        // 分析时长：从默认 5秒 降到 500ms
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "analyzeduration", 500 * 1000L)
+
+        // 断线自动重连
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "reconnect", 1L)
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "reconnect_at_eof", 1L)
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "reconnect_streamed", 1L)
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "reconnect_delay_max", 5L)
+
+        // 网络超时 10秒，DNS 缓存清理
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "timeout", 10 * 1000 * 1000L)
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "dns_cache_clear", 1L)
+
+        // fastseek
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "fflags", "fastseek")
+
+        // 协议白名单
+        player.setOption(
+            IjkMediaPlayer.OPT_CATEGORY_FORMAT,
+            "protocol_whitelist",
+            "file,http,https,tcp,tls,crypto,rtsp,rtp,udp,rtmp,rtmps,rtmpt,rtmpts"
+        )
+
+        // ============================================================
+        // Player 级别参数
+        // ============================================================
+
+        // 首帧等待：从默认 3 帧降到 1 帧
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "min-frames", 1L)
+
+        // 启动即播放
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "start-on-prepared", 1L)
+
+        // 缓冲
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "packet-buffering", 1L)
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "max-buffer-size", 15 * 1024 * 1024L)
+
+        // 精准 Seek
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "enable-accurate-seek", 1L)
+
+        // 音频
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "opensles", 0L)
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "soundtouch", 1L)
+
+        // ============================================================
+        // 解码器分支
         // ============================================================
         if (decoderIndex == 0) {
-            // 硬解模式（默认，画质最好）
+            // 硬解
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec", 1L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-all-videos", 1L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-avc", 1L)
@@ -88,12 +138,10 @@ class IjkPlayerView(
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "framedrop", 1L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_CODEC, "skip_loop_filter", 48L)
         } else {
-            // 软解模式（兼容性最好）
+            // 软解
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec", 0L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-all-videos", 0L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-hevc", 0L)
-            player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-auto-rotate", 0L)
-            player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-handle-resolution-change", 0L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_CODEC, "threads", 4L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_CODEC, "skip_loop_filter", 0L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "framedrop", 5L)
@@ -118,33 +166,23 @@ class IjkPlayerView(
         return player
     }
 
+    /**
+     * 每次换台都新建播放器（避免 reset() 带来的状态问题）
+     * SurfaceView 保持复用，只换播放器内核
+     */
     private fun setUrl(url: String) {
-        // 优先复用现有播放器（reset 比 release+new 快得多）
-        val player = ijkMediaPlayer
-        if (player != null) {
-            try {
-                player.stop()
-                player.reset()
-                player.setDisplay(surfaceView.holder)
-                player.dataSource = url
-                player.prepareAsync()
-                return
-            } catch (_: Exception) {
-                releasePlayer()
-            }
-        }
+        releasePlayer()
 
-        // 新建播放器
-        val newPlayer = createPlayer()
-        ijkMediaPlayer = newPlayer
+        val player = createPlayer()
+        ijkMediaPlayer = player
 
         if (isSurfaceReady) {
-            newPlayer.setDisplay(surfaceView.holder)
+            player.setDisplay(surfaceView.holder)
         }
 
         try {
-            newPlayer.dataSource = url
-            newPlayer.prepareAsync()
+            player.dataSource = url
+            player.prepareAsync()
         } catch (e: Exception) {
             methodChannel.invokeMethod("onError", mapOf("what" to -1, "extra" to e.message))
         }
