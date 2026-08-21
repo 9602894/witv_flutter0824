@@ -73,69 +73,54 @@ class IjkPlayerView(
     private fun createPlayer(): IjkMediaPlayer {
         val player = IjkMediaPlayer()
 
-        // ============================================================
-        // 【关键】Format 级别参数 —— 必须在 setDataSource 之前设置
-        // ============================================================
+        // ========== Format 级别 ==========
+        // probesize 1MB：确保读到完整 SPS/PPS，解码器初始化参数准确
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "probesize", 1024 * 1024L)
+        // analyzeduration 1s：确保正确识别视频参数
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "analyzeduration", 1000 * 1000L)
 
-        // 探测大小：从默认 5MB 降到 512KB，换台速度提升最明显
-        player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "probesize", 512 * 1024L)
-
-        // 分析时长：从默认 5秒 降到 500ms
-        player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "analyzeduration", 500 * 1000L)
-
-        // 断线自动重连
+        // 断线重连
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "reconnect", 1L)
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "reconnect_at_eof", 1L)
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "reconnect_streamed", 1L)
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "reconnect_delay_max", 5L)
 
-        // 网络超时 10秒，DNS 缓存清理
+        // 网络
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "timeout", 10 * 1000 * 1000L)
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "dns_cache_clear", 1L)
-
-        // fastseek
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "fflags", "fastseek")
-
-        // 协议白名单
         player.setOption(
             IjkMediaPlayer.OPT_CATEGORY_FORMAT,
             "protocol_whitelist",
             "file,http,https,tcp,tls,crypto,rtsp,rtp,udp,rtmp,rtmps,rtmpt,rtmpts"
         )
 
-        // ============================================================
-        // Player 级别参数
-        // ============================================================
-
-        // 首帧等待：从默认 3 帧降到 1 帧
+        // ========== Player 级别 ==========
+        // 画面队列
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "video-pictq-size", 4L)
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "min-frames", 1L)
-
-        // 启动即播放
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "start-on-prepared", 1L)
-
-        // 缓冲
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "packet-buffering", 1L)
-        player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "max-buffer-size", 15 * 1024 * 1024L)
-
-        // 精准 Seek
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "max-buffer-size", 20 * 1024 * 1024L)
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "enable-accurate-seek", 1L)
-
-        // 音频
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "opensles", 0L)
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "soundtouch", 1L)
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "avsync-threshold", 100L)
 
-        // ============================================================
-        // 解码器分支
-        // ============================================================
+        // ========== 【画质关键】max-fps 默认 31，高帧率源会被强制丢帧 ==========
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "max-fps", 60L)
+
+        // ========== 解码器分支 ==========
         if (decoderIndex == 0) {
             // 硬解
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec", 1L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-all-videos", 1L)
-            player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-avc", 1L)
+            player.setOption(IJKMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-avc", 1L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-hevc", 1L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-auto-rotate", 1L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-handle-resolution-change", 1L)
-            player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "framedrop", 1L)
+            // 硬解不丢帧
+            player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "framedrop", 0L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_CODEC, "skip_loop_filter", 48L)
         } else {
             // 软解
@@ -144,7 +129,7 @@ class IjkPlayerView(
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-hevc", 0L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_CODEC, "threads", 4L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_CODEC, "skip_loop_filter", 0L)
-            player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "framedrop", 5L)
+            player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "framedrop", 0L)
         }
 
         // 回调
@@ -166,20 +151,13 @@ class IjkPlayerView(
         return player
     }
 
-    /**
-     * 每次换台都新建播放器（避免 reset() 带来的状态问题）
-     * SurfaceView 保持复用，只换播放器内核
-     */
     private fun setUrl(url: String) {
         releasePlayer()
-
         val player = createPlayer()
         ijkMediaPlayer = player
-
         if (isSurfaceReady) {
             player.setDisplay(surfaceView.holder)
         }
-
         try {
             player.dataSource = url
             player.prepareAsync()
@@ -200,8 +178,5 @@ class IjkPlayerView(
     }
 
     override fun getView(): View = surfaceView
-
-    override fun dispose() {
-        releasePlayer()
-    }
+    override fun dispose() { releasePlayer() }
 }
