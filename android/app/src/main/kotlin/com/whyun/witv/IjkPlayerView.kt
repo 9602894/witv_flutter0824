@@ -22,7 +22,8 @@ class IjkPlayerView(
     private var pendingUrl: String? = null
     private var isSurfaceReady = false
     private var currentUrl: String? = null
-    private var decoderIndex: Int = 0  // 0=硬解(画质优先), 1=软解(兼容优先)
+    private var decoderIndex: Int = 0
+    private var isPlayerError: Boolean = false
 
     init {
         decoderIndex = (creationParams?.get("decoderIndex") as? Int) ?: 0
@@ -74,33 +75,38 @@ class IjkPlayerView(
     private fun createPlayer(): IjkMediaPlayer {
         val player = IjkMediaPlayer()
 
-        // ---------- 画面队列，提升渲染平滑度 ----------
+        // ---------- 画面队列 ----------
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "video-pictq-size", 3L)
 
-        // ---------- 精准 Seek，减少画面模糊/花屏 ----------
+        // ---------- 精准 Seek ----------
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "enable-accurate-seek", 1L)
 
-        // ---------- 音频优化 ----------
+        // ---------- 音频 ----------
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "opensles", 0L)
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "soundtouch", 1L)
 
         // ---------- 启动即播放 ----------
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "start-on-prepared", 1L)
 
-        // ---------- 缓冲策略（TVBoxOS 同款 15MB） ----------
+        // ---------- 缓冲（TVBoxOS 同款） ----------
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "packet-buffering", 1L)
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "max-buffer-size", (15 * 1024 * 1024).toLong())
-        player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "min-frames", 3L)
+        // min-frames=1 减少首帧等待，换台更快
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "min-frames", 1L)
+        // 直播低延迟缓存
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "max_cached_duration", 300L)
 
-        // ---------- 网络与重连 ----------
+        // ---------- 网络 ----------
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "timeout", (10 * 1000 * 1000).toLong())
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "reconnect", 1L)
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "http-detect-range-support", 0L)
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "fflags", "fastseek")
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "dns_cache_clear", 1L)
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "dns_cache_timeout", -1L)
 
-        // ---------- 探测参数 ----------
-        player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "probesize", (1024 * 1024).toLong())
-        player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "analyzeduration", (2 * 1000 * 1000).toLong())
+        // ---------- 探测参数（减小以加速换台） ----------
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "probesize", (512 * 1024).toLong())
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "analyzeduration", (500 * 1000).toLong())
 
         // ---------- 协议白名单 ----------
         player.setOption(
@@ -110,10 +116,9 @@ class IjkPlayerView(
         )
 
         // ============================================================
-        // 解码器分支：硬解 vs 软解
+        // 解码器分支
         // ============================================================
         if (decoderIndex == 0) {
-            // ==================== 硬解模式（默认，画质最好） ====================
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec", 1L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-all-videos", 1L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-avc", 1L)
@@ -123,7 +128,6 @@ class IjkPlayerView(
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "framedrop", 1L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_CODEC, "skip_loop_filter", 48L)
         } else {
-            // ==================== 软解模式（兼容性最好） ====================
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec", 0L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-all-videos", 0L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-hevc", 0L)
@@ -134,7 +138,6 @@ class IjkPlayerView(
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "framedrop", 5L)
         }
 
-        // ---------- 同步阈值 ----------
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "avsync-threshold", 100L)
 
         // ---------- 回调 ----------
@@ -144,6 +147,7 @@ class IjkPlayerView(
         }
 
         player.setOnErrorListener { _, what, extra ->
+            isPlayerError = true
             methodChannel.invokeMethod("onError", mapOf("what" to what, "extra" to extra))
             true
         }
@@ -157,17 +161,34 @@ class IjkPlayerView(
     }
 
     private fun setUrl(url: String) {
+        // 复用现有播放器（reset 比 release+new 快得多）
+        val player = ijkMediaPlayer
+        if (player != null && !isPlayerError) {
+            try {
+                player.stop()
+                player.reset()
+                player.setDisplay(surfaceView.holder)
+                player.dataSource = url
+                player.prepareAsync()
+                return
+            } catch (_: Exception) {
+                releasePlayer()
+            }
+        }
+
+        // 新建或出错后重建
         releasePlayer()
-        val player = createPlayer()
-        ijkMediaPlayer = player
+        val newPlayer = createPlayer()
+        ijkMediaPlayer = newPlayer
+        isPlayerError = false
 
         if (isSurfaceReady) {
-            player.setDisplay(surfaceView.holder)
+            newPlayer.setDisplay(surfaceView.holder)
         }
 
         try {
-            player.dataSource = url
-            player.prepareAsync()
+            newPlayer.dataSource = url
+            newPlayer.prepareAsync()
         } catch (e: Exception) {
             methodChannel.invokeMethod("onError", mapOf("what" to -1, "extra" to e.message))
         }
@@ -175,11 +196,14 @@ class IjkPlayerView(
 
     private fun releasePlayer() {
         ijkMediaPlayer?.let {
-            it.stop()
-            it.setDisplay(null)
-            it.release()
+            try {
+                it.stop()
+                it.setDisplay(null)
+                it.release()
+            } catch (_: Exception) {}
         }
         ijkMediaPlayer = null
+        isPlayerError = false
     }
 
     override fun getView(): View = surfaceView
