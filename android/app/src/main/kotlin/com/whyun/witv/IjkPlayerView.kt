@@ -7,7 +7,6 @@ import android.view.View
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.platform.PlatformView
-import tv.danmaku.ijk.media.player.IMediaPlayer
 import tv.danmaku.ijk.media.player.IjkMediaPlayer
 
 class IjkPlayerView(
@@ -23,13 +22,21 @@ class IjkPlayerView(
     private var pendingUrl: String? = null
     private var isSurfaceReady = false
     private var currentUrl: String? = null
+    private var decoderIndex: Int = 0  // 0=硬解(画质优先), 1=软解(兼容优先)
 
     init {
+        decoderIndex = (creationParams?.get("decoderIndex") as? Int) ?: 0
+
         methodChannel.setMethodCallHandler { call, result ->
             when (call.method) {
                 "setUrl" -> {
                     val url = call.argument<String>("url")
-                    if (url != null && url != currentUrl) {
+                    val newDecoderIndex = call.argument<Int>("decoderIndex")
+                    val needRecreate = newDecoderIndex != null && newDecoderIndex != decoderIndex
+                    if (newDecoderIndex != null) {
+                        decoderIndex = newDecoderIndex
+                    }
+                    if (url != null && (url != currentUrl || needRecreate)) {
                         currentUrl = url
                         if (isSurfaceReady) {
                             setUrl(url)
@@ -67,37 +74,82 @@ class IjkPlayerView(
     private fun createPlayer(): IjkMediaPlayer {
         val player = IjkMediaPlayer()
 
-        // ========== 解码器：默认软解（官方 so 硬解兼容性差，反而更卡） ==========
-        // 如需硬解，把下面三行 0 改成 1
-        player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec", 0)
-        player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-auto-rotate", 0)
-        player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-handle-resolution-change", 0)
+        // ============================================================
+        // 画质优化核心配置（参考 TVBoxOS 硬解方案 + ijkplayer 最佳实践）
+        // ============================================================
 
-        // 软解多线程（根据 CPU 核心数，4 线程通常最优）
-        player.setOption(IjkMediaPlayer.OPT_CATEGORY_CODEC, "threads", 4)
+        // ---------- 渲染输出格式：OpenGL ES2，画质最佳 ----------
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "overlay-format", IjkMediaPlayer.SDL_FCC__ES2)
 
-        // 跳过环路滤波，降低 CPU 占用（软解关键优化）
-        player.setOption(IjkMediaPlayer.OPT_CATEGORY_CODEC, "skip_loop_filter", 48)
+        // ---------- 画面队列，提升渲染平滑度 ----------
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "video-pictq-size", 3)
 
-        // ========== 缓冲（直播流必加） ==========
-        player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "packet-buffering", 1)
+        // ---------- 精准 Seek，减少画面模糊/花屏 ----------
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "enable-accurate-seek", 1)
+
+        // ---------- 音频优化 ----------
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "opensles", 0)
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "soundtouch", 1)
+
+        // ---------- 启动即播放 ----------
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "start-on-prepared", 1)
+
+        // ---------- 缓冲策略（TVBoxOS 同款 15MB） ----------
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "packet-buffering", 1)
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "max-buffer-size", 15 * 1024 * 1024)
-        player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "min-frames", 15)
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "min-frames", 3)
 
-        // ========== 卡顿优化核心：丢帧 ==========
-        // 软解时 framedrop 非常重要，解码跟不上就丢旧帧保流畅
-        player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "framedrop", 5)
-
-        // ========== 同步 ==========
-        player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "avsync-threshold", 100)
-
-        // ========== 网络 ==========
+        // ---------- 网络与重连 ----------
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "timeout", 10 * 1000 * 1000)
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "reconnect", 1)
-        player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "analyzeduration", 1 * 1000 * 1000)
-        player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "probesize", 1024 * 1024)
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "http-detect-range-support", 0)
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "fflags", "fastseek")
 
-        // 回调
+        // ---------- 探测参数 ----------
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "probesize", 1024 * 1024)
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "analyzeduration", 2 * 1000 * 1000)
+
+        // ---------- 协议白名单 ----------
+        player.setOption(
+            IjkMediaPlayer.OPT_CATEGORY_FORMAT,
+            "protocol_whitelist",
+            "file,http,https,tcp,tls,crypto,rtsp,rtp,udp"
+        )
+
+        // ============================================================
+        // 解码器分支：硬解 vs 软解
+        // ============================================================
+        if (decoderIndex == 0) {
+            // ==================== 硬解模式（默认，画质最好） ====================
+            player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec", 1)
+            player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-all-videos", 1)
+            player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-avc", 1)
+            player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-hevc", 1)
+            player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-auto-rotate", 1)
+            player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-handle-resolution-change", 1)
+            // 硬解时 framedrop 小一点保画质
+            player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "framedrop", 1)
+            // 硬解时 skip_loop_filter 由硬件内部处理，不影响画质
+            player.setOption(IjkMediaPlayer.OPT_CATEGORY_CODEC, "skip_loop_filter", 48)
+        } else {
+            // ==================== 软解模式（兼容性最好） ====================
+            player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec", 0)
+            player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-all-videos", 0)
+            player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-hevc", 0)
+            player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-auto-rotate", 0)
+            player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-handle-resolution-change", 0)
+            // 软解多线程
+            player.setOption(IjkMediaPlayer.OPT_CATEGORY_CODEC, "threads", 4)
+            // 软解时保画质：不跳过环路滤波（0=不跳过，画质最好）
+            player.setOption(IjkMediaPlayer.OPT_CATEGORY_CODEC, "skip_loop_filter", 0)
+            // 软解时解码跟不上才丢帧
+            player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "framedrop", 5)
+        }
+
+        // ---------- 同步阈值 ----------
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "avsync-threshold", 100)
+
+        // ---------- 回调 ----------
         player.setOnPreparedListener {
             player.start()
             methodChannel.invokeMethod("onInfo", mapOf("what" to 3))
