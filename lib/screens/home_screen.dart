@@ -88,17 +88,19 @@ class _HomeScreenState extends State<HomeScreen> {
   Timer? _digitTimer;
 
   // ============================================================
-  // 工具函数
+  // 工具函数（已修改：UTC 时间 + 北京时间显示）
   // ============================================================
 
-  DateTime _getNow() => DateTime.now();
+  DateTime _getNow() => DateTime.now().toUtc();
 
   String _formatTime(DateTime time) {
-    return '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
+    final beijing = time.add(const Duration(hours: 8));
+    return '${beijing.hour.toString().padLeft(2, '0')}:${beijing.minute.toString().padLeft(2, '0')}';
   }
 
   String _getDate(DateTime time) {
-    return '${time.year}-${time.month.toString().padLeft(2, '0')}-${time.day.toString().padLeft(2, '0')}';
+    final beijing = time.add(const Duration(hours: 8));
+    return '${beijing.year}-${beijing.month.toString().padLeft(2, '0')}-${beijing.day.toString().padLeft(2, '0')}';
   }
 
   EpgProgram? _getCurrentProgram(List<EpgProgram> programs) {
