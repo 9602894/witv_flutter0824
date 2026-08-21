@@ -194,7 +194,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
 
-          // ---------- 解码器选择 ----------
+          // ---------- 解码器选择（已更新详细说明） ----------
           Card(
             margin: EdgeInsets.all(8),
             child: Padding(
@@ -206,8 +206,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   DropdownButton<int>(
                     value: settings.decoderIndex,
                     items: [
-                      DropdownMenuItem(value: 0, child: Text('硬件解码')),
-                      DropdownMenuItem(value: 1, child: Text('软件解码')),
+                      DropdownMenuItem(value: 0, child: Text('硬件解码 (画质优先，推荐)')),
+                      DropdownMenuItem(value: 1, child: Text('软件解码 (兼容优先)')),
                     ],
                     onChanged: (value) {
                       if (value != null) settings.setDecoderIndex(value);
@@ -215,7 +215,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     isExpanded: true,
                   ),
                   SizedBox(height: 8),
-                  Text('当前解码器: ${settings.decoderIndex == 0 ? '硬件' : '软件'}'),
+                  Text(
+                    '当前解码器: ${settings.decoderIndex == 0 ? "硬件（画质更好）" : "软件（兼容性更好）"}',
+                  ),
+                  SizedBox(height: 4),
+                  Text(
+                    '• 硬解：使用 GPU 解码，画质清晰、CPU 占用低，部分老旧设备可能黑屏。\n'
+                    '• 软解：使用 CPU 解码，兼容性最好，但高码率直播可能卡顿。\n'
+                    '如果画面模糊/有马赛克，尝试切换解码器。',
+                    style: TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
                 ],
               ),
             ),
