@@ -4,7 +4,7 @@ import 'package:flutter/services.dart';
 
 class IjkPlayerWidget extends StatefulWidget {
   final String url;
-  final int decoderIndex; // 0=硬解, 1=软解
+  final int decoderIndex;
   final VoidCallback? onError;
   final ValueChanged<double>? onSpeedUpdate;
 
@@ -34,6 +34,7 @@ class _IjkPlayerWidgetState extends State<IjkPlayerWidget> {
   @override
   void didUpdateWidget(covariant IjkPlayerWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
+    // 关键：URL 变化时不复建 PlatformView，直接发 setUrl 指令
     if (widget.url != oldWidget.url || widget.decoderIndex != oldWidget.decoderIndex) {
       _setUrl(widget.url, widget.decoderIndex);
     }
