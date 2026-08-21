@@ -377,14 +377,16 @@ class _HomeScreenState extends State<HomeScreen> {
     _retryChannel = null;
   }
 
+  // ============================================================
+  // 修改后的 _switchChannel —— 直接赋值，不复建 PlatformView
+  // ============================================================
   void _switchChannel(Channel ch) {
     _cancelRetry();
     _digitBuffer = '';
     _digitTimer?.cancel();
     LogService.write('选择频道: ${ch.name}');
     setState(() {
-      currentChannel = null;
-      _playerKey = UniqueKey();
+      // ✅ 直接赋值，不复建 PlatformView
       currentChannel = ch;
       _showEpgInfo = true;
       _selectedIndex = channels.indexOf(ch);
@@ -746,10 +748,10 @@ class _HomeScreenState extends State<HomeScreen> {
               if (currentChannel != null && currentChannel!.url.isNotEmpty)
                 Positioned.fill(
                   child: IjkPlayerWidget(
-  key: _playerKey,
-  url: currentChannel!.url,
-  decoderIndex: Provider.of<SettingsService>(context, listen: false).decoderIndex,
-  onError: () {
+                    key: _playerKey,
+                    url: currentChannel!.url,
+                    decoderIndex: Provider.of<SettingsService>(context, listen: false).decoderIndex,
+                    onError: () {
                       LogService.write('播放器错误回调: ${currentChannel?.name}');
                       _scheduleRetry();
                     },
