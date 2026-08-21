@@ -4,12 +4,14 @@ import 'package:flutter/services.dart';
 
 class IjkPlayerWidget extends StatefulWidget {
   final String url;
+  final int decoderIndex; // 0=硬解, 1=软解
   final VoidCallback? onError;
   final ValueChanged<double>? onSpeedUpdate;
 
   const IjkPlayerWidget({
     Key? key,
     required this.url,
+    this.decoderIndex = 0,
     this.onError,
     this.onSpeedUpdate,
   }) : super(key: key);
@@ -32,9 +34,8 @@ class _IjkPlayerWidgetState extends State<IjkPlayerWidget> {
   @override
   void didUpdateWidget(covariant IjkPlayerWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // 关键：URL 变化时不重建 PlatformView，直接发 setUrl 指令
-    if (widget.url != oldWidget.url) {
-      _setUrl(widget.url);
+    if (widget.url != oldWidget.url || widget.decoderIndex != oldWidget.decoderIndex) {
+      _setUrl(widget.url, widget.decoderIndex);
     }
   }
 
@@ -55,19 +56,21 @@ class _IjkPlayerWidgetState extends State<IjkPlayerWidget> {
           break;
         case 'onInfo':
           final what = call.arguments['what'] as int?;
-          // 首帧渲染（what == 3）时隐藏 loading
           if (what == 3 && mounted) {
             setState(() => _isLoading = false);
           }
           break;
       }
     });
-    _setUrl(widget.url);
+    _setUrl(widget.url, widget.decoderIndex);
   }
 
-  void _setUrl(String url) {
+  void _setUrl(String url, int decoderIndex) {
     if (mounted) setState(() => _isLoading = true);
-    _channel?.invokeMethod('setUrl', {'url': url});
+    _channel?.invokeMethod('setUrl', {
+      'url': url,
+      'decoderIndex': decoderIndex,
+    });
   }
 
   @override
@@ -79,13 +82,15 @@ class _IjkPlayerWidgetState extends State<IjkPlayerWidget> {
 
   @override
   Widget build(BuildContext context) {
-    // 关键：去掉 ValueKey(widget.url)，不复建 PlatformView
     return Stack(
       fit: StackFit.expand,
       children: [
         AndroidView(
           viewType: 'ijkplayer_view',
-          creationParams: {'url': widget.url},
+          creationParams: {
+            'url': widget.url,
+            'decoderIndex': widget.decoderIndex,
+          },
           creationParamsCodec: const StandardMessageCodec(),
           onPlatformViewCreated: _onPlatformViewCreated,
         ),
