@@ -92,7 +92,8 @@ DateTime? _parseDateTimeFast(String str) {
     final hour = int.parse(str.substring(8, 10));
     final minute = int.parse(str.substring(10, 12));
     final second = int.parse(str.substring(12, 14));
-    var dt = DateTime(year, month, day, hour, minute, second);
+    // ✅ 用 UTC 构建，不受系统时区影响
+    var dt = DateTime.utc(year, month, day, hour, minute, second);
     // 处理时区偏移（如 +0800）
     if (str.length >= 19) {
       final tzSign = str[15];
@@ -105,7 +106,8 @@ DateTime? _parseDateTimeFast(String str) {
         dt = dt.add(Duration(minutes: offsetMin));
       }
     }
-    return dt.toLocal();
+    // ✅ 返回 UTC 时间，不调用 toLocal()
+    return dt;
   } catch (_) {
     return null;
   }
