@@ -746,9 +746,10 @@ class _HomeScreenState extends State<HomeScreen> {
               if (currentChannel != null && currentChannel!.url.isNotEmpty)
                 Positioned.fill(
                   child: IjkPlayerWidget(
-                    key: _playerKey,
-                    url: currentChannel!.url,
-                    onError: () {
+  key: _playerKey,
+  url: currentChannel!.url,
+  decoderIndex: Provider.of<SettingsService>(context, listen: false).decoderIndex,
+  onError: () {
                       LogService.write('播放器错误回调: ${currentChannel?.name}');
                       _scheduleRetry();
                     },
