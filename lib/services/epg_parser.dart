@@ -10,7 +10,7 @@ import 'package:collection/collection.dart';
 import '../models/epg_program.dart';
 import 'log_service.dart';
 import 'epg_database_service.dart';
-import 'config_service.dart';  // 新增导入
+import 'config_service.dart';
 
 // ============================================================
 // EpgParser —— 酷9方案：精准匹配 + 东八区强制 + 秒级解析
@@ -385,6 +385,25 @@ class EpgParser {
     final dir = await getApplicationDocumentsDirectory();
     final file = File('${dir.path}/epg_settings.json');
     await file.writeAsString(jsonEncode(settings));
+  }
+
+  // ============================================================
+  // 新增公共方法：供设置界面读写 EPG URL
+  // ============================================================
+
+  /// 获取当前配置的 EPG URL
+  static Future<String?> getEpgUrl() async {
+    final settings = await _loadSettings();
+    return settings[_epgUrlKey] as String?;
+  }
+
+  /// 保存 EPG URL
+  static Future<void> saveEpgUrl(String url) async {
+    if (url.isEmpty) return;
+    final settings = await _loadSettings();
+    settings[_epgUrlKey] = url;
+    await _saveSettings(settings);
+    LogService.write('EPG URL 已更新: $url');
   }
 }
 
