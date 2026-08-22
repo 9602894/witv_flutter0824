@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
@@ -12,7 +13,7 @@ class EpgDatabaseService {
   static const String _mappingsTable = 'epg_mappings';
   static const String _iconsTable   = 'epg_icons';
   static const String _metaTable    = 'epg_meta';
-  static const int _dbVersion = 2;
+  static const int _dbVersion = 3; // 升到 v3，加 date 字段
 
   static Future<Database> get _database async {
     if (_db != null) return _db!;
@@ -24,16 +25,43 @@ class EpgDatabaseService {
     final dbPath = await getDatabasesPath();
     final path = join(dbPath, 'epg_data.db');
 
+    // ========== 核心优化：新用户直接复制预构建数据库 ==========
+    final file = File(path);
+    if (!await file.exists()) {
+      await _copyPrebuiltDb(path);
+    }
+
     return await openDatabase(
       path,
       version: _dbVersion,
       onCreate: (db, version) async {
+        // 如果复制成功，这里不会执行；如果复制失败，创建空表兜底
         await _createAllTables(db);
       },
       onUpgrade: (db, oldVersion, newVersion) async {
-        if (oldVersion < 2) await _createAllTables(db);
+        if (oldVersion < 2) {
+          // v1->v2: 加映射表索引（老用户兼容）
+          await db.execute('CREATE INDEX IF NOT EXISTS idx_mapping_epgid ON $_mappingsTable(epgid)');
+        }
+        if (oldVersion < 3) {
+          // v2->v3: 节目表加 date 字段和索引
+          await db.execute('ALTER TABLE $_programsTable ADD COLUMN date TEXT');
+          await db.execute('CREATE INDEX IF NOT EXISTS idx_programs_date ON $_programsTable(date)');
+        }
       },
     );
+  }
+
+  /// 从 assets 复制预构建数据库，零解析时间
+  static Future<void> _copyPrebuiltDb(String path) async {
+    try {
+      final data = await rootBundle.load('assets/epg_init.db');
+      final bytes = data.buffer.asUint8List();
+      await File(path).writeAsBytes(bytes, flush: true);
+      LogService.write('EpgDatabase: 预构建数据库复制完成');
+    } catch (e) {
+      LogService.write('EpgDatabase: 未找到预构建数据库，将创建空库: $e');
+    }
   }
 
   static Future<void> _createAllTables(Database db) async {
@@ -44,27 +72,20 @@ class EpgDatabaseService {
       "title TEXT NOT NULL,"
       "start_time INTEGER NOT NULL,"
       "end_time INTEGER NOT NULL,"
-      "desc TEXT"
+      "desc TEXT,"
+      "date TEXT NOT NULL"
       ")",
     );
-    await db.execute(
-      "CREATE INDEX IF NOT EXISTS idx_channel_time ON $_programsTable(channel_name, start_time, end_time)",
-    );
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_programs_channel_time ON $_programsTable(channel_name, start_time, end_time)");
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_programs_date ON $_programsTable(date)");
 
     await db.execute(
       "CREATE TABLE IF NOT EXISTS $_mappingsTable ("
-      "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-      "name TEXT NOT NULL,"
-      "epgid TEXT NOT NULL,"
-      "UNIQUE(name)"
+      "name TEXT PRIMARY KEY COLLATE NOCASE,"  // NOCASE: 大小写不敏感
+      "epgid TEXT NOT NULL"
       ")",
     );
-    await db.execute(
-      "CREATE INDEX IF NOT EXISTS idx_mapping_name ON $_mappingsTable(name)",
-    );
-    await db.execute(
-      "CREATE INDEX IF NOT EXISTS idx_mapping_epgid ON $_mappingsTable(epgid)",
-    );
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_mapping_epgid ON $_mappingsTable(epgid)");
 
     await db.execute(
       "CREATE TABLE IF NOT EXISTS $_iconsTable ("
@@ -81,9 +102,9 @@ class EpgDatabaseService {
     );
   }
 
-  // ==================== 映射表管理 ====================
+  // ==================== 映射表（只读，预置） ====================
 
-  /// 首次启动从 assets 导入，后续启动直接跳过
+  /// Fallback：如果未使用预构建 db，首次从 JSON 导入（保留旧逻辑兼容）
   static Future<void> initMappingsFromAssets() async {
     final db = await _database;
     final countResult = await db.rawQuery('SELECT COUNT(*) as count FROM $_mappingsTable');
@@ -108,42 +129,147 @@ class EpgDatabaseService {
           for (final name in nameStr.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty)) {
             batch.insert(_mappingsTable, {'name': name, 'epgid': epgid},
                 conflictAlgorithm: ConflictAlgorithm.ignore);
-            if (++cnt % 500 == 0) await batch.commit(noResult: true);
+            if (++cnt % 1000 == 0) {
+              await batch.commit(noResult: true);
+              // batch 提交后需要重新创建，否则后续 insert 不生效
+            }
           }
         }
         await batch.commit(noResult: true);
       });
 
-      final finalCount = Sqflite.firstIntValue(
-        await db.rawQuery('SELECT COUNT(*) as count FROM $_mappingsTable'),
-      );
-      LogService.write('EpgDatabase: 映射表初始化完成，共 $finalCount 条');
+      LogService.write('EpgDatabase: 映射表 Fallback 导入完成');
     } catch (e) {
-      LogService.write('EpgDatabase: 映射表初始化失败: $e');
+      LogService.write('EpgDatabase: 映射表 Fallback 导入失败: $e');
     }
   }
 
-  static Future<String?> getEpgIdByName(String channelName) async {
+  // ==================== 核心查询优化（JOIN 一次往返） ====================
+
+  /// 查单个频道当前节目（自动映射，大小写不敏感）
+  static Future<EpgProgram?> getCurrentProgram(String channelName, DateTime nowUtc) async {
     final db = await _database;
-    final rows = await db.query(_mappingsTable,
-        columns: ['epgid'], where: 'name = ?', whereArgs: [channelName], limit: 1);
-    return rows.isNotEmpty ? rows.first['epgid'] as String : null;
+    final nowMs = nowUtc.millisecondsSinceEpoch;
+    final rows = await db.rawQuery('''
+      SELECT p.title, p.start_time, p.end_time, p.desc
+      FROM $_programsTable p
+      INNER JOIN $_mappingsTable m ON p.channel_name = m.epgid
+      WHERE m.name = ? COLLATE NOCASE
+        AND p.start_time <= ?
+        AND p.end_time >= ?
+      ORDER BY p.start_time ASC
+      LIMIT 1
+    ''', [channelName, nowMs, nowMs]);
+    return rows.isNotEmpty ? _rowToProgram(rows.first) : null;
   }
 
-  static Future<Map<String, String?>> getEpgIdsByNames(List<String> names) async {
-    if (names.isEmpty) return {};
+  /// 查单个频道当天全部节目
+  static Future<List<EpgProgram>> getProgramsForChannel(String channelName) async {
     final db = await _database;
-    final ph = List.filled(names.length, '?').join(',');
-    final rows = await db.query(_mappingsTable,
-        where: 'name IN ($ph)', whereArgs: names);
-    final result = {for (var n in names) n: null as String?};
+    final rows = await db.rawQuery('''
+      SELECT p.title, p.start_time, p.end_time, p.desc
+      FROM $_programsTable p
+      INNER JOIN $_mappingsTable m ON p.channel_name = m.epgid
+      WHERE m.name = ? COLLATE NOCASE
+      ORDER BY p.start_time ASC
+    ''', [channelName]);
+    return rows.map(_rowToProgram).toList();
+  }
+
+  /// 查多个频道当前节目（批量，一次 SQL 往返）
+  static Future<Map<String, EpgProgram?>> getCurrentProgramsForChannels(
+      List<String> channelNames, DateTime nowUtc) async {
+    if (channelNames.isEmpty) return {};
+    final db = await _database;
+    final nowMs = nowUtc.millisecondsSinceEpoch;
+    final ph = List.filled(channelNames.length, '?').join(',');
+
+    final rows = await db.rawQuery('''
+      SELECT p.title, p.start_time, p.end_time, p.desc, m.name as query_name
+      FROM $_programsTable p
+      INNER JOIN $_mappingsTable m ON p.channel_name = m.epgid
+      WHERE m.name IN ($ph) COLLATE NOCASE
+        AND p.start_time <= ?
+        AND p.end_time >= ?
+      ORDER BY p.start_time ASC
+    ''', [...channelNames, nowMs, nowMs]);
+
+    // 结果映射回原始传入名称（大小写兼容）
+    final result = <String, EpgProgram?>{for (var n in channelNames) n: null};
     for (final row in rows) {
-      result[row['name'] as String] = row['epgid'] as String;
+      final qName = (row['query_name'] as String).toLowerCase();
+      for (final orig in channelNames) {
+        if (orig.toLowerCase() == qName && result[orig] == null) {
+          result[orig] = _rowToProgram(row);
+          break;
+        }
+      }
     }
     return result;
   }
 
-  // ==================== 节目数据管理 ====================
+  /// 查多个频道全天节目（批量）
+  static Future<Map<String, List<EpgProgram>>> getProgramsForChannels(List<String> channelNames) async {
+    if (channelNames.isEmpty) return {};
+    final db = await _database;
+    final ph = List.filled(channelNames.length, '?').join(',');
+
+    final rows = await db.rawQuery('''
+      SELECT p.title, p.start_time, p.end_time, p.desc, m.name as query_name
+      FROM $_programsTable p
+      INNER JOIN $_mappingsTable m ON p.channel_name = m.epgid
+      WHERE m.name IN ($ph) COLLATE NOCASE
+      ORDER BY p.start_time ASC
+    ''', channelNames);
+
+    final result = <String, List<EpgProgram>>{for (var n in channelNames) n: []};
+    for (final row in rows) {
+      final qName = (row['query_name'] as String).toLowerCase();
+      for (final orig in channelNames) {
+        if (orig.toLowerCase() == qName) {
+          result[orig]!.add(_rowToProgram(row));
+          break;
+        }
+      }
+    }
+    return result;
+  }
+
+  static Future<EpgProgram?> getNextProgram(String channelName, DateTime nowUtc) async {
+    final db = await _database;
+    final nowMs = nowUtc.millisecondsSinceEpoch;
+    final rows = await db.rawQuery('''
+      SELECT p.title, p.start_time, p.end_time, p.desc
+      FROM $_programsTable p
+      INNER JOIN $_mappingsTable m ON p.channel_name = m.epgid
+      WHERE m.name = ? COLLATE NOCASE
+        AND p.start_time > ?
+      ORDER BY p.start_time ASC
+      LIMIT 1
+    ''', [channelName, nowMs]);
+    return rows.isNotEmpty ? _rowToProgram(rows.first) : null;
+  }
+
+  static Future<String?> getChannelIcon(String channelName) async {
+    final db = await _database;
+    // 先按原始名查
+    var rows = await db.query(_iconsTable,
+        where: 'channel_name = ? COLLATE NOCASE', whereArgs: [channelName], limit: 1);
+    if (rows.isNotEmpty) return rows.first['icon_url'] as String?;
+
+    // 再按映射后的 epgid 查
+    final epgidRows = await db.query(_mappingsTable,
+        columns: ['epgid'], where: 'name = ? COLLATE NOCASE', whereArgs: [channelName], limit: 1);
+    if (epgidRows.isNotEmpty) {
+      final epgid = epgidRows.first['epgid'] as String;
+      rows = await db.query(_iconsTable,
+          where: 'channel_name = ? COLLATE NOCASE', whereArgs: [epgid], limit: 1);
+      if (rows.isNotEmpty) return rows.first['icon_url'] as String?;
+    }
+    return null;
+  }
+
+  // ==================== 写入与清理 ====================
 
   static Future<void> insertPrograms(
     Map<String, List<EpgProgram>> programs,
@@ -152,6 +278,7 @@ class EpgDatabaseService {
   }) async {
     final db = await _database;
     await db.transaction((txn) async {
+      // 只清节目和图标，不清映射表（映射表是预置的）
       await txn.delete(_programsTable);
       await txn.delete(_iconsTable);
       await txn.delete(_metaTable);
@@ -160,12 +287,15 @@ class EpgDatabaseService {
       int cnt = 0;
       for (final entry in programs.entries) {
         for (final prog in entry.value) {
+          final dateStr =
+              '${prog.start.year}${prog.start.month.toString().padLeft(2, '0')}${prog.start.day.toString().padLeft(2, '0')}';
           batch.insert(_programsTable, {
             'channel_name': entry.key,
             'title': prog.title,
             'start_time': prog.start.millisecondsSinceEpoch,
             'end_time': prog.end.millisecondsSinceEpoch,
             'desc': prog.desc,
+            'date': dateStr,
           });
           if (++cnt % 500 == 0) {
             await batch.commit(noResult: true);
@@ -192,135 +322,34 @@ class EpgDatabaseService {
         await txn.insert(_metaTable, {'key': 'hash', 'value': epgHash});
       }
       await txn.insert(_metaTable, {
-        'key': 'update_time', 'value': DateTime.now().millisecondsSinceEpoch.toString()
+        'key': 'update_time',
+        'value': DateTime.now().millisecondsSinceEpoch.toString()
       });
       await txn.insert(_metaTable, {
-        'key': 'channel_count', 'value': programs.length.toString()
+        'key': 'channel_count',
+        'value': programs.length.toString()
       });
       await txn.insert(_metaTable, {
-        'key': 'program_count', 'value': cnt.toString()
+        'key': 'program_count',
+        'value': cnt.toString()
       });
     });
     LogService.write('EpgDatabase: 写入 $cnt 条节目，${icons.length} 个图标');
   }
 
-  /// 核心查询：传入播放列表中的频道名，自动做映射转换
-  static Future<List<EpgProgram>> getProgramsForChannel(String channelName) async {
-    final epgid = await getEpgIdByName(channelName);
-    final target = epgid ?? channelName;
-
+  /// 清理 N 天前的节目（防止数据库无限膨胀）
+  static Future<void> cleanOldPrograms(int keepDays) async {
     final db = await _database;
-    final rows = await db.query(_programsTable,
-        where: 'channel_name = ?', whereArgs: [target], orderBy: 'start_time ASC');
-    return rows.map(_rowToProgram).toList();
-  }
-
-  static Future<Map<String, List<EpgProgram>>> getProgramsForChannels(List<String> channelNames) async {
-    if (channelNames.isEmpty) return {};
-    final epgIdMap = await getEpgIdsByNames(channelNames);
-
-    final nameToTarget = <String, String>{};
-    final allTargets = <String>{};
-    for (final n in channelNames) {
-      final t = epgIdMap[n] ?? n;
-      nameToTarget[n] = t;
-      allTargets.add(t);
+    final cutoff = DateTime.now().subtract(Duration(days: keepDays));
+    final dateStr = '${cutoff.year}${cutoff.month.toString().padLeft(2, '0')}${cutoff.day.toString().padLeft(2, '0')}';
+    final deleted = await db.delete(
+      _programsTable,
+      where: 'date < ?',
+      whereArgs: [dateStr],
+    );
+    if (deleted > 0) {
+      LogService.write('EpgDatabase: 清理 $deleted 条过期节目（<$dateStr）');
     }
-
-    final db = await _database;
-    final ph = List.filled(allTargets.length, '?').join(',');
-    final rows = await db.query(_programsTable,
-        where: 'channel_name IN ($ph)',
-        whereArgs: allTargets.toList(),
-        orderBy: 'start_time ASC');
-
-    final result = <String, List<EpgProgram>>{for (var n in channelNames) n: []};
-    for (final row in rows) {
-      final rowName = row['channel_name'] as String;
-      for (final e in nameToTarget.entries) {
-        if (e.value == rowName) result[e.key]!.add(_rowToProgram(row));
-      }
-    }
-    return result;
-  }
-
-  static Future<EpgProgram?> getCurrentProgram(String channelName, DateTime nowUtc) async {
-    final progs = await getCurrentPrograms(channelName, nowUtc);
-    return progs.isNotEmpty ? progs.first : null;
-  }
-
-  static Future<List<EpgProgram>> getCurrentPrograms(String channelName, DateTime nowUtc) async {
-    final epgid = await getEpgIdByName(channelName);
-    final target = epgid ?? channelName;
-    final nowMs = nowUtc.millisecondsSinceEpoch;
-
-    final db = await _database;
-    final rows = await db.query(_programsTable,
-        where: 'channel_name = ? AND start_time <= ? AND end_time >= ?',
-        whereArgs: [target, nowMs, nowMs],
-        orderBy: 'start_time ASC');
-    return rows.map(_rowToProgram).toList();
-  }
-
-  static Future<EpgProgram?> getNextProgram(String channelName, DateTime nowUtc) async {
-    final epgid = await getEpgIdByName(channelName);
-    final target = epgid ?? channelName;
-    final nowMs = nowUtc.millisecondsSinceEpoch;
-
-    final db = await _database;
-    final rows = await db.query(_programsTable,
-        where: 'channel_name = ? AND start_time > ?',
-        whereArgs: [target, nowMs],
-        orderBy: 'start_time ASC', limit: 1);
-    return rows.isNotEmpty ? _rowToProgram(rows.first) : null;
-  }
-
-  static Future<Map<String, EpgProgram?>> getCurrentProgramsForChannels(
-      List<String> channelNames, DateTime nowUtc) async {
-    if (channelNames.isEmpty) return {};
-    final epgIdMap = await getEpgIdsByNames(channelNames);
-
-    final targets = <String, String>{};
-    final allTargets = <String>{};
-    for (final n in channelNames) {
-      final t = epgIdMap[n] ?? n;
-      targets[n] = t;
-      allTargets.add(t);
-    }
-
-    final nowMs = nowUtc.millisecondsSinceEpoch;
-    final db = await _database;
-    final ph = List.filled(allTargets.length, '?').join(',');
-    final rows = await db.query(_programsTable,
-        where: 'channel_name IN ($ph) AND start_time <= ? AND end_time >= ?',
-        whereArgs: [...allTargets, nowMs, nowMs]);
-
-    final result = <String, EpgProgram?>{for (var n in channelNames) n: null};
-    for (final row in rows) {
-      final rowName = row['channel_name'] as String;
-      for (final e in targets.entries) {
-        if (e.value == rowName) {
-          result[e.key] = _rowToProgram(row);
-          break;
-        }
-      }
-    }
-    return result;
-  }
-
-  static Future<String?> getChannelIcon(String channelName) async {
-    final db = await _database;
-    var rows = await db.query(_iconsTable,
-        where: 'channel_name = ?', whereArgs: [channelName], limit: 1);
-    if (rows.isNotEmpty) return rows.first['icon_url'] as String?;
-
-    final epgid = await getEpgIdByName(channelName);
-    if (epgid != null) {
-      rows = await db.query(_iconsTable,
-          where: 'channel_name = ?', whereArgs: [epgid], limit: 1);
-      if (rows.isNotEmpty) return rows.first['icon_url'] as String?;
-    }
-    return null;
   }
 
   static Future<bool> isEmpty() async {
@@ -341,6 +370,7 @@ class EpgDatabaseService {
       await txn.delete(_programsTable);
       await txn.delete(_iconsTable);
       await txn.delete(_metaTable);
+      // 注意：映射表不删，它是预置的
     });
     LogService.write('EpgDatabase: 节目数据已清空');
   }
