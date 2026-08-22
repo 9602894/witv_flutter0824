@@ -1,4 +1,4 @@
-import 'dart:io';  // ⬅️ 新增导入，用于 File 类
+import 'dart:io';
 import 'package:flutter/material.dart';
 import '../models/channel.dart';
 import '../models/epg_program.dart';
@@ -74,9 +74,32 @@ class ChannelList extends StatelessWidget {
     );
   }
 
-  // 修改：优先使用本地下载的 Logo，降级使用 M3U 自带 URL
+  // 修改：先同步查缓存，避免闪烁；再降级 M3U URL；最后 FutureBuilder 尝试下载
   Widget _buildLogo(Channel channel) {
     final logoService = LogoService();
+
+    // 1. 先同步查缓存，避免 FutureBuilder 反复重建导致闪烁
+    final cached = logoService.getLogoSync(channel.name);
+    if (cached != null && cached.existsSync()) {
+      return Image.file(
+        cached,
+        width: 32,
+        height: 32,
+        errorBuilder: (_, __, ___) => const Icon(Icons.tv, color: Colors.white54, size: 24),
+      );
+    }
+
+    // 2. 降级：先用 M3U 自带的网络 URL
+    if (channel.logoUrl != null && channel.logoUrl!.isNotEmpty) {
+      return Image.network(
+        channel.logoUrl!,
+        width: 32,
+        height: 32,
+        errorBuilder: (_, __, ___) => const Icon(Icons.tv, color: Colors.white54, size: 24),
+      );
+    }
+
+    // 3. 后台尝试下载本地台标
     return FutureBuilder<File?>(
       future: logoService.getLogo(channel.name),
       builder: (context, snapshot) {
@@ -84,15 +107,6 @@ class ChannelList extends StatelessWidget {
         if (file != null && file.existsSync()) {
           return Image.file(
             file,
-            width: 32,
-            height: 32,
-            errorBuilder: (_, __, ___) => const Icon(Icons.tv, color: Colors.white54, size: 24),
-          );
-        }
-        // 本地没有，降级用 M3U 自带的网络 URL
-        if (channel.logoUrl != null && channel.logoUrl!.isNotEmpty) {
-          return Image.network(
-            channel.logoUrl!,
             width: 32,
             height: 32,
             errorBuilder: (_, __, ___) => const Icon(Icons.tv, color: Colors.white54, size: 24),
