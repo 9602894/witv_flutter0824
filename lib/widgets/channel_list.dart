@@ -1,3 +1,4 @@
+import 'dart:io';  // ⬅️ 新增导入，用于 File 类
 import 'package:flutter/material.dart';
 import '../models/channel.dart';
 import '../models/epg_program.dart';
