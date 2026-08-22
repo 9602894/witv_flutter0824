@@ -5,6 +5,7 @@ import 'package:path_provider/path_provider.dart' as path_provider;
 import '../models/subscription.dart';
 import 'dart:convert';
 import 'log_service.dart';
+import 'config_service.dart';  // 新增导入
 
 class SettingsService extends ChangeNotifier {
   List<Subscription> _subscriptions = [];
@@ -31,6 +32,19 @@ class SettingsService extends ChangeNotifier {
         final list = jsonDecode(subsJson) as List;
         _subscriptions = list.map((e) => Subscription.fromJson(e)).toList();
       }
+
+      // ===== 新增：首次安装时从 configuration.json 导入预置订阅源 =====
+      if (_subscriptions.isEmpty) {
+        final config = await ConfigService.getConfig();
+        final inner = config['Configuration'] as Map<String, dynamic>?;
+        final liveUrls = inner?['LIVE_URLS'] as String?;
+        if (liveUrls != null && liveUrls.isNotEmpty) {
+          _subscriptions = _parseConfigUrls(liveUrls);
+          await saveSubscriptions();
+        }
+      }
+      // =================================================================
+
       _decoderIndex = prefs.getInt('decoder_index') ?? 0;
       _lastChannel = prefs.getString('last_channel');
       _autoReconnect = prefs.getBool('auto_reconnect') ?? true;
@@ -39,6 +53,27 @@ class SettingsService extends ChangeNotifier {
       await LogService.writeCrashLog(e, stack);
     }
     notifyListeners();
+  }
+
+  // 解析 configuration.json 的 URL 格式：地址$名称||地址$名称
+  List<Subscription> _parseConfigUrls(String urlsStr) {
+    final result = <Subscription>[];
+    final parts = urlsStr.split('||');
+    for (final part in parts) {
+      final trimmed = part.trim();
+      if (trimmed.isEmpty) continue;
+      final idx = trimmed.lastIndexOf('\$');
+      if (idx > 0) {
+        final url = trimmed.substring(0, idx).trim();
+        final name = trimmed.substring(idx + 1).trim();
+        if (url.isNotEmpty && name.isNotEmpty) {
+          result.add(Subscription(name: name, url: url, selected: true));
+        }
+      } else {
+        result.add(Subscription(name: '预置源', url: trimmed, selected: true));
+      }
+    }
+    return result;
   }
 
   Future<void> saveSubscriptions() async {
