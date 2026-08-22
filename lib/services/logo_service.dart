@@ -146,6 +146,16 @@ class LogoService {
     }
   }
 
+  /// 获取台标 URL（优先使用 M3U 自带，其次 EPG）
+  Future<String?> getLogoUrl(String channelName, String? fallbackUrl) async {
+    // 1. 优先使用 M3U 订阅源自带的 tvg-logo
+    if (fallbackUrl != null && fallbackUrl.isNotEmpty) {
+      return fallbackUrl;
+    }
+    // 2. 尝试从 EPG 获取
+    return await EpgParser.getChannelIcon(channelName);
+  }
+
   void updateM3uLogos(Map<String, String> logos) {
     _m3uLogos.clear();
     _m3uLogos.addAll(logos);
