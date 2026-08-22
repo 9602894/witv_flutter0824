@@ -7,11 +7,11 @@ class ChannelList extends StatelessWidget {
   final List<Channel> channels;
   final Channel? selectedChannel;
   final ValueChanged<Channel> onSelect;
-  final Map<String, List<EpgProgram>> epgMap; // 废弃，保留兼容
+  final Map<String, List<EpgProgram>> epgMap;
   final bool showChannelNumber;
   final bool showLogo;
-  final EpgProgram? currentEpgProgram; // 新增：当前节目
-  final EpgProgram? nextEpgProgram; // 新增：下一个节目
+  final EpgProgram? currentEpgProgram;
+  final EpgProgram? nextEpgProgram;
 
   const ChannelList({
     Key? key,
@@ -73,21 +73,31 @@ class ChannelList extends StatelessWidget {
     );
   }
 
+  // 修改：优先使用本地下载的 Logo，降级使用 M3U 自带 URL
   Widget _buildLogo(Channel channel) {
     final logoService = LogoService();
-    return FutureBuilder<String?>(
-      future: logoService.getLogoUrl(channel.name, channel.logoUrl),
+    return FutureBuilder<File?>(
+      future: logoService.getLogo(channel.name),
       builder: (context, snapshot) {
-        final url = snapshot.data;
-        if (url == null || url.isEmpty) {
-          return const Icon(Icons.tv, color: Colors.white54, size: 24);
+        final file = snapshot.data;
+        if (file != null && file.existsSync()) {
+          return Image.file(
+            file,
+            width: 32,
+            height: 32,
+            errorBuilder: (_, __, ___) => const Icon(Icons.tv, color: Colors.white54, size: 24),
+          );
         }
-        return Image.network(
-          url,
-          width: 32,
-          height: 32,
-          errorBuilder: (_, __, ___) => const Icon(Icons.tv, color: Colors.white54, size: 24),
-        );
+        // 本地没有，降级用 M3U 自带的网络 URL
+        if (channel.logoUrl != null && channel.logoUrl!.isNotEmpty) {
+          return Image.network(
+            channel.logoUrl!,
+            width: 32,
+            height: 32,
+            errorBuilder: (_, __, ___) => const Icon(Icons.tv, color: Colors.white54, size: 24),
+          );
+        }
+        return const Icon(Icons.tv, color: Colors.white54, size: 24);
       },
     );
   }
