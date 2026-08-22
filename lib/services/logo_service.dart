@@ -47,6 +47,10 @@ class LogoService {
   factory LogoService() => _instance;
   LogoService._internal();
 
+  // ---------- 内存缓存（新增） ----------
+  final Map<String, File?> _logoResultCache = {};
+
+  // ---------- 原有字段 ----------
   Map<String, String>? _nameToEpgId;
   bool _nameMapLoaded = false;
   final Map<String, String> _m3uLogos = {};
@@ -59,6 +63,13 @@ class LogoService {
   static const int _transparencyTolerance = 30;
   static const String _prefsKeySources = 'logo_sources_enabled';
   static const int _maxConcurrent = 3;
+
+  // ==================== 同步缓存查询（新增） ====================
+
+  /// 同步获取已缓存的台标（给UI先用，避免FutureBuilder闪烁）
+  File? getLogoSync(String channelName) {
+    return _logoResultCache[channelName];
+  }
 
   // ==================== 配置管理 ====================
 
@@ -101,6 +112,7 @@ class LogoService {
         await logoDir.create();
         _m3uLogos.clear();
         _pendingDownloads.clear();
+        _logoResultCache.clear(); // 同时清空内存缓存
         LogService.write('LogoService: 已手动删除所有台标文件');
       }
     } catch (e) {}
@@ -110,7 +122,14 @@ class LogoService {
   /// 1. 所有变种名共享同一个 epgid.png（通过 epg_data.json 的 name 映射）
   /// 2. 本地已有直接返回，不再重复下载
   /// 3. 并发锁防止同一个文件被同时写入
+  /// 4. 内存缓存避免重复查询
   Future<File?> getLogo(String channelName) async {
+    // 1. 先查内存缓存
+    if (_logoResultCache.containsKey(channelName)) {
+      LogService.write('Logo: $channelName 命中内存缓存');
+      return _logoResultCache[channelName];
+    }
+
     final sources = await getEnabledSources();
     if (sources.isEmpty) {
       LogService.write('Logo: 未配置台标来源，跳过 $channelName');
@@ -125,21 +144,33 @@ class LogoService {
 
     // 本地已有，直接返回（所有变种共用）
     if (await cacheFile.exists()) {
+      LogService.write('Logo: $channelName 命中本地缓存 $cacheName');
+      _logoResultCache[channelName] = cacheFile;
       return cacheFile;
     }
 
     // 如果已经有别的频道在下载同一个文件，排队等它完成
     if (_pendingDownloads.containsKey(cacheName)) {
       LogService.write('Logo: $channelName 等待 $cacheName 下载完成...');
-      return await _pendingDownloads[cacheName]!;
+      final result = await _pendingDownloads[cacheName]!;
+      _logoResultCache[channelName] = result;
+      return result;
     }
 
     // 发起下载，并记录到 pending
+    LogService.write('Logo: $channelName 开始下载 $cacheName');
     final downloadTask = _downloadFromSources(channelName, cacheName, sources);
     _pendingDownloads[cacheName] = downloadTask;
 
     try {
       final result = await downloadTask;
+      // 下载完成后存入内存缓存（即使是 null 也存，避免重复尝试）
+      _logoResultCache[channelName] = result;
+      if (result != null) {
+        LogService.write('Logo: $channelName 下载成功 -> $cacheName');
+      } else {
+        LogService.write('Logo: $channelName 下载失败');
+      }
       return result;
     } finally {
       _pendingDownloads.remove(cacheName);
@@ -176,6 +207,7 @@ class LogoService {
         eagerError: false,
       );
     }
+    LogService.write('LogoService: 预加载完成');
   }
 
   // ==================== 下载逻辑（带锁保护） ====================
@@ -393,11 +425,18 @@ class LogoService {
     return dir;
   }
 
+  // 修改：增加日志，确认映射加载
   Future<String?> _getEpgId(String channelName) async {
     if (!_nameMapLoaded) {
+      LogService.write('Logo: 加载 epg_data.json 名称映射...');
       _nameToEpgId = await EpgParser.getNameToEpgId();
       _nameMapLoaded = true;
+      LogService.write('Logo: 名称映射加载完成，共 ${_nameToEpgId?.length ?? 0} 条');
     }
-    return _nameToEpgId?[channelName];
+    final id = _nameToEpgId?[channelName];
+    if (id == null) {
+      LogService.write('Logo: 未找到映射: $channelName');
+    }
+    return id;
   }
 }
