@@ -201,6 +201,9 @@ class EpgParser {
       // 3) 主线程写入数据库（事务批量插入，性能足够）
       await EpgDatabaseService.insertPrograms(programs, icons, epgHash: newHash);
 
+      // ✅ 微调：清理三天前的旧节目（避免数据膨胀）
+      await EpgDatabaseService.cleanOldPrograms(3); // 只保留最近 3 天
+
       // 4) 保留 XML 备份
       final xmlFile = File('${_cacheDir!.path}/epg_$newHash.xml');
       await tempFile.copy(xmlFile.path);
