@@ -257,25 +257,28 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _loadAllEpg() async {
     try {
-      LogService.write('EPG: _loadAllEpg 开始执行');
+      LogService.write('EPG: ===== _loadAllEpg 开始 =====');
       await EpgParser.warmUpCache();
 
-      final isDbEmpty = await EpgDatabaseService.isEmpty();
-      LogService.write('EPG: 数据库是否为空=$isDbEmpty');
+      final programCount = await EpgDatabaseService.getProgramCount();
+      final channelCount = await EpgDatabaseService.getChannelCount();
+      LogService.write('EPG: 当前数据库状态 - programs=$programCount, channels=$channelCount');
 
-      if (isDbEmpty) {
-        LogService.write('EPG: 数据库为空，开始首次强制下载...');
+      if (programCount == 0) {
+        LogService.write('EPG: programs 表为空，开始强制下载...');
         try {
           await EpgParser.forceRefresh();
-          LogService.write('EPG: 首次下载并解析完成');
+          final afterCount = await EpgDatabaseService.getProgramCount();
+          LogService.write('EPG: 强制下载完成，当前节目数=$afterCount');
         } catch (e, stack) {
           LogService.writeCrashLog('EPG首次加载失败: $e', stack);
         }
       } else {
-        LogService.write('EPG: 数据库已有数据，跳过首次下载');
-        // 可选：后台检查更新（不阻塞播放）
+        LogService.write('EPG: 数据库已有 $programCount 条节目，跳过下载');
+        // 后台检查更新（不阻塞播放）
         _checkEpgUpdate();
       }
+      LogService.write('EPG: ===== _loadAllEpg 结束 =====');
     } catch (e, stack) {
       LogService.writeCrashLog('加载EPG失败: $e', stack);
     }
