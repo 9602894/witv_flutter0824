@@ -21,6 +21,10 @@ import '../widgets/group_list.dart';
 import '../widgets/schedule_view.dart';
 import 'settings_screen.dart';
 
+// ============================================================
+// HomeScreen —— 酷9方案优化版：播放零阻塞，EPG 秒级全量加载
+// ============================================================
+
 class HomeScreen extends StatefulWidget {
   @override
   _HomeScreenState createState() => _HomeScreenState();
@@ -116,6 +120,18 @@ class _HomeScreenState extends State<HomeScreen> {
     LogService.write('主页初始化');
     await _initLayoutConfigFile();
     await _loadLayoutConfig();
+
+    // FIX: 诊断 Logo 配置 + 首次自动设置默认来源
+    final logoSources = await _logoService.getEnabledSources();
+    LogService.write('Logo: 已配置来源 ${logoSources.length} 个: ${logoSources.map((s) => s.name).join(', ')}');
+
+    // 如果未配置，自动设置默认来源
+    final hasLogoSource = await _logoService.hasConfiguredSource();
+    if (!hasLogoSource) {
+      LogService.write('Logo: 首次使用，自动设置默认来源 GitHub');
+      await _logoService.setEnabledSources([LogoSource.github]);
+    }
+
     _initEpgScheduler();
     _startEpgInfoTimer();
     if (mounted) setState(() => isLoading = false);
@@ -242,13 +258,37 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _loadAllEpg() async {
     try {
       await EpgParser.warmUpCache();
+
       final isDbEmpty = await EpgDatabaseService.isEmpty();
+
+      // FIX 1: 数据库为空时强制下载
       if (isDbEmpty) {
+        LogService.write('EPG: 数据库为空，开始首次下载...');
         try {
           await EpgParser.forceRefresh();
         } catch (e) {
           LogService.write('EPG首次加载失败: $e');
         }
+        return;
+      }
+
+      // FIX 2: 数据库有数据，检查是否超过 6 小时未更新
+      final settings = await EpgParser.getEpgSettings();
+      final lastUpdate = settings['last_epg_update'] as int?;
+      final lastDate = lastUpdate != null
+          ? DateTime.fromMillisecondsSinceEpoch(lastUpdate)
+          : DateTime(2000);
+
+      if (DateTime.now().difference(lastDate) >= const Duration(hours: 6)) {
+        LogService.write('EPG: 数据已过期，开始后台更新...');
+        // 后台静默更新，不阻塞
+        EpgParser.forceRefresh().then((_) {
+          LogService.write('EPG: 后台更新完成');
+        }).catchError((e) {
+          LogService.write('EPG后台更新失败: $e');
+        });
+      } else {
+        LogService.write('EPG: 数据库数据有效，跳过下载');
       }
     } catch (e) {
       LogService.write('加载EPG失败: $e');
