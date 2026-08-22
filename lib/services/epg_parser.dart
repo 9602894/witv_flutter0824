@@ -134,14 +134,52 @@ class EpgParser {
     return false;
   }
 
+  // FIX: forceRefresh 增加配置回退逻辑和详细日志
   static Future<void> forceRefresh() async {
     try {
-      final settings = await _loadSettings();
-      final url = settings[_epgUrlKey] as String?;
-      LogService.write('EPG forceRefresh: url=$url');
-      if (url == null || url.isEmpty) throw Exception('未配置EPG地址');
+      LogService.write('EPG forceRefresh: 开始执行');
 
-      LogService.write('EPG forceRefresh: 开始下载...');
+      final settings = await _loadSettings();
+      LogService.write('EPG forceRefresh: settings=$settings');
+
+      var url = settings[_epgUrlKey] as String?;
+      LogService.write('EPG forceRefresh: url=$url');
+
+      if (url == null || url.isEmpty) {
+        LogService.write('EPG forceRefresh: URL为空，尝试从配置读取');
+        // 再次尝试从 ConfigService 读取
+        final config = await ConfigService.getConfig();
+        final inner = config['Configuration'] as Map<String, dynamic>?;
+        final epgUrls = inner?['EPG_URLS'] as String?;
+        LogService.write('EPG forceRefresh: 从配置读取 EPG_URLS=$epgUrls');
+
+        if (epgUrls == null || epgUrls.isEmpty) {
+          throw Exception('未配置EPG地址，且 configuration.json 中无 EPG_URLS');
+        }
+        // 解析 URL
+        final parts = epgUrls.split('||');
+        String? foundUrl;
+        for (final part in parts) {
+          final trimmed = part.trim();
+          if (trimmed.isEmpty) continue;
+          final idx = trimmed.lastIndexOf('\$');
+          final u = idx > 0 ? trimmed.substring(0, idx).trim() : trimmed;
+          if (u.isNotEmpty) {
+            foundUrl = u;
+            break;
+          }
+        }
+        if (foundUrl == null) throw Exception('EPG_URLS 解析失败');
+
+        // 保存到设置
+        await saveEpgUrl(foundUrl);
+        LogService.write('EPG forceRefresh: 从配置自动设置 URL=$foundUrl');
+
+        // 重新下载
+        return await forceRefresh();
+      }
+
+      LogService.write('EPG forceRefresh: 开始下载 $url');
       final response = await http.get(Uri.parse(url)).timeout(const Duration(seconds: 60));
       LogService.write('EPG forceRefresh: HTTP ${response.statusCode}, bodyLength=${response.bodyBytes.length}');
 
@@ -480,19 +518,15 @@ class EpgParser {
   }
 
   // ============================================================
-  // 缓存管理（FIX: 启动时强制清空数据库）
+  // 缓存管理（FIX: 只加载名称映射，不做数据库清理）
   // ============================================================
 
   static Future<void> warmUpCache() async {
     try {
-      // FIX: 启动时强制清空可能存在的旧/损坏数据
-      await EpgDatabaseService.clearAll();
-      LogService.write('EPG: 数据库已强制清空');
-
       await _loadEpgNameMap();
-      LogService.write('EPG: 缓存预热完成');
+      LogService.write('EPG: warmUpCache 完成');
     } catch (e, stack) {
-      LogService.writeCrashLog('EPG缓存预热失败: $e', stack);
+      LogService.writeCrashLog('EPG warmUpCache 失败: $e', stack);
     }
   }
 
