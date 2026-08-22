@@ -47,13 +47,14 @@ class EpgDatabaseService {
     );
   }
 
+  /// 清空旧数据，批量插入新 EPG
   static Future<void> insertPrograms(
     Map<String, List<EpgProgram>> programs,
     Map<String, String> icons, {
     String? epgHash,
   }) async {
     final db = await _database;
-    int totalCount = 0;  // ✅ 提到 transaction 外面
+    int totalCount = 0;
 
     await db.transaction((txn) async {
       await txn.delete(_tableName);
@@ -76,19 +77,29 @@ class EpgDatabaseService {
         }
       }
       await batch.commit(noResult: true);
-      totalCount = count;  // ✅ 赋值给外部变量
+      totalCount = count;
 
       if (epgHash != null) {
         await txn.insert(_metaTable, {'key': 'hash', 'value': epgHash});
       }
-      await txn.insert(_metaTable, {'key': 'update_time', 'value': DateTime.now().millisecondsSinceEpoch.toString()});
-      await txn.insert(_metaTable, {'key': 'channel_count', 'value': programs.length.toString()});
-      await txn.insert(_metaTable, {'key': 'program_count', 'value': count.toString()});
+      await txn.insert(_metaTable, {
+        'key': 'update_time',
+        'value': DateTime.now().millisecondsSinceEpoch.toString(),
+      });
+      await txn.insert(_metaTable, {
+        'key': 'channel_count',
+        'value': programs.length.toString(),
+      });
+      await txn.insert(_metaTable, {
+        'key': 'program_count',
+        'value': count.toString(),
+      });
     });
 
-    LogService.write('EpgDatabase: 插入 $totalCount 条节目');  // ✅ 用外部变量
+    LogService.write('EpgDatabase: 插入 $totalCount 条节目');
   }
 
+  /// 查询单个频道当前节目
   static Future<EpgProgram?> getCurrentProgram(String channelName, DateTime nowUtc) async {
     final db = await _database;
     final nowMs = nowUtc.millisecondsSinceEpoch;
@@ -102,6 +113,34 @@ class EpgDatabaseService {
     return _rowToProgram(rows.first);
   }
 
+  /// 查询下一节目
+  static Future<EpgProgram?> getNextProgram(String channelName, DateTime nowUtc) async {
+    final db = await _database;
+    final nowMs = nowUtc.millisecondsSinceEpoch;
+    final rows = await db.query(
+      _tableName,
+      where: 'channel_name = ? AND start_time > ?',
+      whereArgs: [channelName, nowMs],
+      orderBy: 'start_time ASC',
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    return _rowToProgram(rows.first);
+  }
+
+  /// 查询频道全部节目
+  static Future<List<EpgProgram>> getProgramsForChannel(String channelName) async {
+    final db = await _database;
+    final rows = await db.query(
+      _tableName,
+      where: 'channel_name = ?',
+      whereArgs: [channelName],
+      orderBy: 'start_time ASC',
+    );
+    return rows.map((r) => _rowToProgram(r)).toList();
+  }
+
+  /// 批量查询多个频道的当前节目（用于频道列表窗口）
   static Future<Map<String, EpgProgram?>> getCurrentProgramsForChannels(
     List<String> channelNames,
     DateTime nowUtc,
