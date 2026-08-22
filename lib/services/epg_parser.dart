@@ -12,10 +12,6 @@ import 'log_service.dart';
 import 'epg_database_service.dart';
 import 'config_service.dart';
 
-// ============================================================
-// EpgParser —— 酷9方案：精准匹配 + 东八区强制 + 秒级解析
-// ============================================================
-
 class EpgParser {
   static const String _epgUrlKey = 'epg_url';
   static const String _lastEpgUpdateKey = 'last_epg_update';
@@ -29,32 +25,27 @@ class EpgParser {
   static final _cacheLock = Object();
 
   // ---------- epg_data.json 映射 ----------
-  // name -> epgid 的精准映射（多对一）
   static Map<String, String>? _nameToEpgidMap;
 
   // ---------- 时区：强制东八区 ----------
-  /// 获取当前时间（强制东八区）
   static DateTime get beijingNow {
     final now = DateTime.now();
     return now.toUtc().add(const Duration(hours: 8));
   }
 
-  /// 将任意时间转为东八区显示
   static DateTime toBeijing(DateTime dt) {
     return dt.toUtc().add(const Duration(hours: 8));
   }
 
-  /// 格式化时间（东八区）
   static String formatBeijingTime(DateTime dt) {
     final bj = toBeijing(dt);
     return '${bj.hour.toString().padLeft(2, '0')}:${bj.minute.toString().padLeft(2, '0')}';
   }
 
   // ============================================================
-  // 加载 epg_data.json（频道名称 → epgid 映射）
+  // 加载 epg_data.json
   // ============================================================
 
-  /// 加载 epg_data.json，建立 name -> epgid 映射
   static Future<void> _loadEpgNameMap() async {
     if (_nameToEpgidMap != null) return;
 
@@ -78,17 +69,15 @@ class EpgParser {
     }
   }
 
-  /// 根据频道名称获取 epgid（精准匹配）
   static Future<String?> getEpgidByChannelName(String channelName) async {
     await _loadEpgNameMap();
     return _nameToEpgidMap?[channelName];
   }
 
   // ============================================================
-  // EPG XML 下载与解析（酷9方案）
+  // EPG XML 下载与解析
   // ============================================================
 
-  /// 检查并更新 EPG（后台静默）
   static Future<bool> checkForUpdate() async {
     try {
       final settings = await _loadSettings();
@@ -122,18 +111,21 @@ class EpgParser {
     return false;
   }
 
-  /// 强制刷新 EPG（用户手动触发）
+  // 修改：增强日志，便于排查
   static Future<void> forceRefresh() async {
     try {
       final settings = await _loadSettings();
       final url = settings[_epgUrlKey] as String?;
+      LogService.write('EPG forceRefresh: url=$url');
       if (url == null || url.isEmpty) throw Exception('未配置EPG地址');
 
-      LogService.write('EPG: 强制刷新 $url');
+      LogService.write('EPG forceRefresh: 开始下载...');
       final response = await http.get(Uri.parse(url)).timeout(const Duration(seconds: 60));
+      LogService.write('EPG forceRefresh: HTTP ${response.statusCode}, bodyLength=${response.bodyBytes.length}');
 
       if (response.statusCode == 200) {
         final xmlString = utf8.decode(response.bodyBytes);
+        LogService.write('EPG forceRefresh: 开始解析，xml长度=${xmlString.length}');
         await _parseAndCache(xmlString, url);
         await _saveSettings({
           ...settings,
@@ -144,13 +136,14 @@ class EpgParser {
         throw Exception('HTTP ${response.statusCode}');
       }
     } catch (e, stack) {
-      LogService.writeCrashLog('EPG强制刷新失败: $e', stack);
+      LogService.write('EPG forceRefresh 异常: $e');
+      await LogService.writeCrashLog('EPG强制刷新失败: $e', stack);
       rethrow;
     }
   }
 
   // ============================================================
-  // XML 解析（秒级：流式解析 + 批量入库）
+  // XML 解析
   // ============================================================
 
   static Future<void> _parseAndCache(String xmlString, String sourceUrl) async {
@@ -225,7 +218,6 @@ class EpgParser {
     LogService.write('EPG解析完成: ${programMap.length} 频道, ${programmes.length} 节目, 耗时 ${stopwatch.elapsedMilliseconds}ms');
   }
 
-  /// 解析 XMLTV 时间格式（多种格式兼容）
   static DateTime? _parseXmltvTime(String t) {
     try {
       String s = t.trim();
@@ -249,10 +241,9 @@ class EpgParser {
   }
 
   // ============================================================
-  // 查询接口（核心：三层精准匹配）
+  // 查询接口（三层精准匹配）
   // ============================================================
 
-  /// 获取频道节目单（通过频道名称 → epgid → channel id → programmes）
   static Future<List<EpgProgram>> getProgramsByChannelName(String channelName) async {
     if (channelName.isEmpty) return [];
 
@@ -272,7 +263,6 @@ class EpgParser {
     return programs;
   }
 
-  /// 获取当前节目（东八区时间）
   static Future<EpgProgram?> getCurrentProgram(String channelName) async {
     final programs = await getProgramsByChannelName(channelName);
     if (programs.isEmpty) return null;
@@ -281,7 +271,6 @@ class EpgParser {
     return programs.firstWhereOrNull((p) => p.start.isBefore(now) && p.stop.isAfter(now));
   }
 
-  /// 获取下一个节目（东八区时间）
   static Future<EpgProgram?> getNextProgram(String channelName) async {
     final programs = await getProgramsByChannelName(channelName);
     if (programs.isEmpty) return null;
@@ -290,7 +279,6 @@ class EpgParser {
     return programs.firstWhereOrNull((p) => p.start.isAfter(now));
   }
 
-  /// 获取频道图标
   static Future<String?> getChannelIcon(String channelName) async {
     final epgid = await getEpgidByChannelName(channelName);
     if (epgid == null) return null;
@@ -300,25 +288,26 @@ class EpgParser {
   }
 
   // ============================================================
-  // 新增方法（放在 getChannelIcon 后面）
+  // 新增公共方法：获取/保存 EPG URL
   // ============================================================
 
-  /// 获取频道图标 URL（兼容旧调用）
-  static Future<String?> getChannelIconUrl(String channelName) async {
-    return getChannelIcon(channelName);
+  static Future<String?> getEpgUrl() async {
+    final settings = await _loadSettings();
+    return settings[_epgUrlKey] as String?;
   }
 
-  /// 获取完整 name → epgid 映射（供 LogoService 使用）
-  static Future<Map<String, String>> getNameToEpgId() async {
-    await _loadEpgNameMap();
-    return _nameToEpgidMap ?? {};
+  static Future<void> saveEpgUrl(String url) async {
+    if (url.isEmpty) return;
+    final settings = await _loadSettings();
+    settings[_epgUrlKey] = url;
+    await _saveSettings(settings);
+    LogService.write('EPG URL 已更新: $url');
   }
 
   // ============================================================
   // 缓存管理
   // ============================================================
 
-  /// 预加载到内存（启动时调用）
   static Future<void> warmUpCache() async {
     try {
       final isDbEmpty = await EpgDatabaseService.isEmpty();
@@ -346,7 +335,6 @@ class EpgParser {
   }
 
   // ---------- 设置持久化 ----------
-  // ⭐ 修改后的 _loadSettings()：支持从 configuration.json 读取默认 EPG URL
   static Future<Map<String, dynamic>> _loadSettings() async {
     try {
       final dir = await getApplicationDocumentsDirectory();
@@ -358,7 +346,7 @@ class EpgParser {
       }
     } catch (_) {}
 
-    // ===== 新增：本地没有 EPG 设置时，从 configuration.json 读取默认配置 =====
+    // 本地没有 EPG 设置时，从 configuration.json 读取默认配置
     try {
       final config = await ConfigService.getConfig();
       final inner = config['Configuration'] as Map<String, dynamic>?;
@@ -376,7 +364,6 @@ class EpgParser {
         }
       }
     } catch (_) {}
-    // =======================================================================
 
     return {};
   }
@@ -385,25 +372,6 @@ class EpgParser {
     final dir = await getApplicationDocumentsDirectory();
     final file = File('${dir.path}/epg_settings.json');
     await file.writeAsString(jsonEncode(settings));
-  }
-
-  // ============================================================
-  // 新增公共方法：供设置界面读写 EPG URL
-  // ============================================================
-
-  /// 获取当前配置的 EPG URL
-  static Future<String?> getEpgUrl() async {
-    final settings = await _loadSettings();
-    return settings[_epgUrlKey] as String?;
-  }
-
-  /// 保存 EPG URL
-  static Future<void> saveEpgUrl(String url) async {
-    if (url.isEmpty) return;
-    final settings = await _loadSettings();
-    settings[_epgUrlKey] = url;
-    await _saveSettings(settings);
-    LogService.write('EPG URL 已更新: $url');
   }
 }
 
