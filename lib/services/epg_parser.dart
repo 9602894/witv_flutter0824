@@ -13,6 +13,10 @@ import 'log_service.dart';
 import 'epg_database_service.dart';
 import 'config_service.dart';
 
+// ============================================================
+// EpgParser —— 酷9方案：精准匹配 + 东八区强制 + 秒级解析
+// ============================================================
+
 class EpgParser {
   static const String _epgUrlKey = 'epg_url';
   static const String _lastEpgUpdateKey = 'last_epg_update';
@@ -44,7 +48,7 @@ class EpgParser {
   }
 
   // ============================================================
-  // 加载 epg_data.json
+  // 加载 epg_data.json（修复：顶层是 Map {"epgs": [...]}）
   // ============================================================
 
   static Future<void> _loadEpgNameMap() async {
@@ -53,12 +57,17 @@ class EpgParser {
     try {
       LogService.write('EPG: 开始加载 epg_data.json...');
       final jsonString = await rootBundle.loadString(_epgDataJsonAsset);
-      final List<dynamic> data = jsonDecode(jsonString);
+
+      // FIX: 顶层是 Map {"epgs": [...]}，不是 List
+      final jsonData = jsonDecode(jsonString) as Map<String, dynamic>;
+      final List<dynamic> data = jsonData['epgs'] as List<dynamic>? ?? [];
 
       _nameToEpgidMap = {};
       for (final item in data) {
-        final epgid = item['epgid'] as String;
-        final namesStr = item['name'] as String;
+        if (item is! Map) continue;
+        final epgid = item['epgid'] as String?;
+        final namesStr = item['name'] as String?;
+        if (epgid == null || namesStr == null) continue;
         final names = namesStr.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty);
         for (final name in names) {
           _nameToEpgidMap![name] = epgid;
@@ -150,53 +159,44 @@ class EpgParser {
   static Future<void> _parseAndCache(String xmlString, String sourceUrl) async {
     final stopwatch = Stopwatch()..start();
 
-    // 1. 先把 XML 写入临时文件（避免主线程序列化大字符串到 Isolate）
+    // 1. XML 写入临时文件
     final tempDir = await getTemporaryDirectory();
     final xmlFile = File('${tempDir.path}/epg_temp_${DateTime.now().millisecondsSinceEpoch}.xml');
     await xmlFile.writeAsString(xmlString, flush: true);
     LogService.write('EPG: XML已写入临时文件 ${xmlFile.path}，大小=${xmlString.length}');
 
-    // 2. Isolate 只传文件路径，解析后结果也写文件
+    // 2. Isolate 解析 XML → 结果文件路径
     final resultPath = await compute(_parseXmlFile, xmlFile.path);
+    await xmlFile.delete();
     LogService.write('EPG: Isolate解析完成，结果文件=$resultPath');
 
-    // 3. 删除 XML 临时文件
-    await xmlFile.delete();
+    // 3. FIX: 把大 JSON 反序列化也放到 Isolate，返回结构化数据
+    final parsed = await compute(_deserializeEpgResult, resultPath);
+    await File(resultPath).delete();
 
-    // 4. 从结果文件读取（避免主线程反序列化大 Map）
-    final resultFile = File(resultPath);
-    final jsonData = jsonDecode(await resultFile.readAsString());
-    await resultFile.delete();
+    final programMap = parsed.programs;
+    final channelIcons = parsed.icons;
+    final displayNameMap = parsed.displayNames;
 
-    final programJsonMap = (jsonData['programs'] as Map<String, dynamic>).map(
-      (k, v) => MapEntry(k, (v as List).map((e) => e as Map<String, dynamic>).toList()),
-    );
-    final channelIcons = (jsonData['icons'] as Map<String, dynamic>).cast<String, String>();
-
-    final programMap = programJsonMap.map((k, v) => MapEntry(
-      k,
-      v.map((e) => EpgProgram(
-        title: e['title'] as String,
-        description: e['description'] as String,
-        start: DateTime.parse(e['start'] as String),
-        stop: DateTime.parse(e['stop'] as String),
-      )).toList(),
-    ));
-
-    // 5. 分批写入数据库，避免阻塞
-    LogService.write('EPG: 开始分批写入数据库，共 ${programMap.length} 个频道');
+    // 4. FIX: 减小 batch size，每批 yield，使用数据库 batch 插入
+    LogService.write('EPG: 开始写入数据库，共 ${programMap.length} 频道');
     await EpgDatabaseService.clearAll();
-    const batchSize = 1000;
+
+    // 先批量插入频道信息（含 display-name）
+    await EpgDatabaseService.batchUpdateDisplayNames(displayNameMap);
+    await EpgDatabaseService.batchUpdateIcons(channelIcons);
+
+    // 再分批插入节目，用 batch
+    const batchSize = 500; // 减小批次
     final entries = programMap.entries.toList();
     for (var i = 0; i < entries.length; i += batchSize) {
       final batch = Map<String, List<EpgProgram>>.fromEntries(
         entries.skip(i).take(batchSize),
       );
-      await EpgDatabaseService.insertPrograms(batch, channelIcons);
-      // 每 3 批让出一次时间片，保证播放不卡
-      if (i > 0 && i % 3000 == 0) {
+      await EpgDatabaseService.insertProgramsBatch(batch);
+      // FIX: 每批都 yield，保证播放流畅
+      if (i + batchSize < entries.length) {
         await Future.delayed(const Duration(milliseconds: 16));
-        LogService.write('EPG: 已写入 $i/${entries.length} 个频道');
       }
     }
 
@@ -205,16 +205,21 @@ class EpgParser {
     _cacheTime = DateTime.now();
 
     stopwatch.stop();
-    LogService.write('EPG解析完成: ${programMap.length} 频道, ${jsonData['count']} 节目, 耗时 ${stopwatch.elapsedMilliseconds}ms');
+    LogService.write('EPG解析完成: ${programMap.length} 频道, ${parsed.count} 节目, 耗时 ${stopwatch.elapsedMilliseconds}ms');
   }
+
+  // ============================================================
+  // Isolate 解析函数
+  // ============================================================
 
   /// 在 Isolate 中解析 XML 文件，结果写入临时 JSON 文件，返回文件路径
   static String _parseXmlFile(String xmlFilePath) {
     final xmlString = File(xmlFilePath).readAsStringSync();
     final document = XmlDocument.parse(xmlString);
 
-    // 1. 解析 channel
+    // 1. 解析 channel（FIX: 同时取 display-name）
     final channelIcons = <String, String>{};
+    final displayNames = <String, String>{};
 
     final channels = document.findAllElements('channel');
     for (final channel in channels) {
@@ -225,6 +230,13 @@ class EpgParser {
       if (iconElem != null) {
         final src = iconElem.getAttribute('src');
         if (src != null && src.isNotEmpty) channelIcons[id] = src;
+      }
+
+      // FIX: 解析 display-name，优先第一个
+      final displayNameElem = channel.getElement('display-name');
+      if (displayNameElem != null) {
+        final dn = displayNameElem.value?.trim();
+        if (dn != null && dn.isNotEmpty) displayNames[id] = dn;
       }
     }
 
@@ -258,11 +270,12 @@ class EpgParser {
       entry.value.sort((a, b) => DateTime.parse(a['start']!).compareTo(DateTime.parse(b['start']!)));
     }
 
-    // 4. 写入结果文件
+    // 4. 写入结果文件（FIX: 带上 displayNames）
     final resultFile = File('${Directory.systemTemp.path}/epg_result_${DateTime.now().millisecondsSinceEpoch}.json');
     resultFile.writeAsStringSync(jsonEncode({
       'programs': programJsonMap,
       'icons': channelIcons,
+      'displayNames': displayNames,
       'count': programmes.length,
     }));
 
@@ -289,6 +302,48 @@ class EpgParser {
       }
     } catch (_) {}
     return null;
+  }
+
+  // ============================================================
+  // Isolate 反序列化（避免主线程阻塞）
+  // ============================================================
+
+  /// FIX: 新增数据类，用于 Isolate 间传递解析结果
+  class _EpgParsedResult {
+    final Map<String, List<EpgProgram>> programs;
+    final Map<String, String> icons;
+    final Map<String, String> displayNames;
+    final int count;
+    _EpgParsedResult(this.programs, this.icons, this.displayNames, this.count);
+  }
+
+  /// FIX: 在 Isolate 中反序列化 JSON，避免主线程阻塞
+  static _EpgParsedResult _deserializeEpgResult(String resultPath) {
+    final resultFile = File(resultPath);
+    final jsonData = jsonDecode(resultFile.readAsStringSync());
+
+    final programJsonMap = (jsonData['programs'] as Map<String, dynamic>).map(
+      (k, v) => MapEntry(k, (v as List).map((e) => e as Map<String, dynamic>).toList()),
+    );
+    final channelIcons = (jsonData['icons'] as Map<String, dynamic>).cast<String, String>();
+    final displayNames = (jsonData['displayNames'] as Map<String, dynamic>?)?.cast<String, String>() ?? {};
+
+    final programMap = programJsonMap.map((k, v) => MapEntry(
+      k,
+      v.map((e) => EpgProgram(
+        title: e['title'] as String,
+        description: e['description'] as String,
+        start: DateTime.parse(e['start'] as String),
+        stop: DateTime.parse(e['stop'] as String),
+      )).toList(),
+    ));
+
+    return _EpgParsedResult(
+      programMap,
+      channelIcons,
+      displayNames,
+      jsonData['count'] as int? ?? 0,
+    );
   }
 
   // ============================================================
@@ -335,9 +390,19 @@ class EpgParser {
     return programs.firstWhereOrNull((p) => p.start.isAfter(now));
   }
 
+  // ============================================================
+  // getChannelIcon（FIX: 同一个 epgid 的台标复用）
+  // ============================================================
+
   static Future<String?> getChannelIcon(String channelName) async {
     final epgid = await getEpgidByChannelName(channelName);
     if (epgid == null) return null;
+
+    // FIX: 先尝试 channel_id 精确匹配（epgid 通常就是 XML 的 channel id）
+    var icon = await EpgDatabaseService.getChannelIcon(epgid);
+    if (icon != null) return icon;
+
+    // fallback: 尝试 display_name 匹配
     final channelId = await EpgDatabaseService.findChannelIdByDisplayName(epgid);
     if (channelId == null) return null;
     return EpgDatabaseService.getChannelIcon(channelId);
