@@ -47,7 +47,6 @@ class EpgDatabaseService {
     );
   }
 
-  /// 清空旧数据，批量插入新 EPG
   static Future<void> insertPrograms(
     Map<String, List<EpgProgram>> programs,
     Map<String, String> icons, {
@@ -99,22 +98,35 @@ class EpgDatabaseService {
     LogService.write('EpgDatabase: 插入 $totalCount 条节目');
   }
 
-  /// 查询单个频道当前节目
-  static Future<EpgProgram?> getCurrentProgram(String channelName, DateTime nowUtc) async {
+  /// ✅ 查询单个频道当前节目（返回列表）
+  static Future<List<EpgProgram>> getCurrentPrograms(
+    String channelName,
+    DateTime nowUtc,
+  ) async {
     final db = await _database;
     final nowMs = nowUtc.millisecondsSinceEpoch;
     final rows = await db.query(
       _tableName,
       where: 'channel_name = ? AND start_time <= ? AND end_time >= ?',
       whereArgs: [channelName, nowMs, nowMs],
-      limit: 1,
+      orderBy: 'start_time ASC',
     );
-    if (rows.isEmpty) return null;
-    return _rowToProgram(rows.first);
+    return rows.map((r) => _rowToProgram(r)).toList();
   }
 
-  /// 查询下一节目
-  static Future<EpgProgram?> getNextProgram(String channelName, DateTime nowUtc) async {
+  /// 查询单个频道当前节目（简化版，返回第一条）
+  static Future<EpgProgram?> getCurrentProgram(
+    String channelName,
+    DateTime nowUtc,
+  ) async {
+    final programs = await getCurrentPrograms(channelName, nowUtc);
+    return programs.isNotEmpty ? programs.first : null;
+  }
+
+  static Future<EpgProgram?> getNextProgram(
+    String channelName,
+    DateTime nowUtc,
+  ) async {
     final db = await _database;
     final nowMs = nowUtc.millisecondsSinceEpoch;
     final rows = await db.query(
@@ -128,7 +140,6 @@ class EpgDatabaseService {
     return _rowToProgram(rows.first);
   }
 
-  /// 查询频道全部节目
   static Future<List<EpgProgram>> getProgramsForChannel(String channelName) async {
     final db = await _database;
     final rows = await db.query(
@@ -140,7 +151,6 @@ class EpgDatabaseService {
     return rows.map((r) => _rowToProgram(r)).toList();
   }
 
-  /// 批量查询多个频道的当前节目（用于频道列表窗口）
   static Future<Map<String, EpgProgram?>> getCurrentProgramsForChannels(
     List<String> channelNames,
     DateTime nowUtc,
