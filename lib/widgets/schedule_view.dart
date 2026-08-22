@@ -45,11 +45,19 @@ class _ScheduleViewState extends State<ScheduleView> {
   List<EpgProgram> _programs = [];
   bool _isLoading = false;
 
+  // ADDED: EPG 更新订阅
+  StreamSubscription? _epgUpdateSub;
+
   @override
   void initState() {
     super.initState();
     _selectedChannel = widget.selectedChannel;
     _loadPrograms();
+
+    // ADDED: EPG 更新后自动刷新节目单
+    _epgUpdateSub = EpgParser.onEpgUpdated.listen((_) {
+      if (mounted) _loadPrograms();
+    });
   }
 
   @override
@@ -82,6 +90,13 @@ class _ScheduleViewState extends State<ScheduleView> {
     } catch (e) {
       setState(() => _isLoading = false);
     }
+  }
+
+  @override
+  void dispose() {
+    // ADDED: 取消 EPG 更新订阅
+    _epgUpdateSub?.cancel();
+    super.dispose();
   }
 
   @override
