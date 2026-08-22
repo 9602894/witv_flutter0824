@@ -3,7 +3,7 @@ import 'package:provider/provider.dart';
 import '../services/settings_service.dart';
 import '../services/log_service.dart';
 import '../services/config_service.dart';
-import '../services/epg_parser.dart';          // 新增导入
+import '../services/epg_parser.dart';
 import '../models/subscription.dart';
 import '../widgets/logo_source_dialog.dart';
 import 'dart:io';
@@ -17,19 +17,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _urlController = TextEditingController();
   final TextEditingController _tokenController = TextEditingController();
-  final TextEditingController _epgUrlController = TextEditingController(); // 新增
+  final TextEditingController _epgUrlController = TextEditingController();
   bool _isAdding = false;
   bool _isLoadingToken = true;
-  bool _isSavingEpg = false;                    // 新增
+  bool _isSavingEpg = false;
 
   @override
   void initState() {
     super.initState();
     _loadToken();
-    _loadCurrentEpgUrl();                       // 加载当前 EPG URL 填入输入框
+    _loadCurrentEpgUrl();
   }
 
-  // 加载当前 EPG URL 到输入框
   Future<void> _loadCurrentEpgUrl() async {
     final url = await EpgParser.getEpgUrl();
     if (mounted) {
@@ -52,16 +51,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _nameController.dispose();
     _urlController.dispose();
     _tokenController.dispose();
-    _epgUrlController.dispose();  // 释放
+    _epgUrlController.dispose();
     super.dispose();
   }
 
-  // ---------- 获取当前 EPG URL（供 FutureBuilder 显示） ----------
   Future<String?> _getCurrentEpgUrl() async {
     return await EpgParser.getEpgUrl();
   }
 
-  // ---------- 保存 EPG URL ----------
   Future<void> _saveEpgUrl() async {
     final url = _epgUrlController.text.trim();
     if (url.isEmpty) {
@@ -76,6 +73,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('EPG URL 已保存')),
       );
+      _epgUrlController.clear();
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('保存失败: $e')),
@@ -172,7 +170,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
 
-          // ======================== 新增：EPG 订阅管理 ========================
+          // ---------- EPG 订阅管理 ----------
           Card(
             margin: EdgeInsets.all(8),
             child: Padding(
@@ -219,7 +217,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ),
           ),
-          // =================================================================
 
           // ---------- GitHub 令牌设置 ----------
           Card(
@@ -435,7 +432,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  // ---------- 删除确认（透明弹窗） ----------
+  // ---------- 删除确认 ----------
   Future<void> _confirmDelete(Subscription sub) async {
     final confirm = await _showTransparentDialog<bool>(
       context: context,
@@ -497,7 +494,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  // ---------- 清空日志确认（透明弹窗） ----------
+  // ---------- 清空日志确认 ----------
   Future<void> _clearLogs() async {
     final confirm = await _showTransparentDialog<bool>(
       context: context,
@@ -524,7 +521,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  // ---------- 统一透明弹窗（非全屏、半透明背景） ----------
+  // ---------- 统一透明弹窗 ----------
   Future<T?> _showTransparentDialog<T>({
     required BuildContext context,
     required String title,
