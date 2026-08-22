@@ -21,10 +21,6 @@ import '../widgets/group_list.dart';
 import '../widgets/schedule_view.dart';
 import 'settings_screen.dart';
 
-// ============================================================
-// HomeScreen —— 酷9方案优化版：播放零阻塞，EPG 秒级全量加载
-// ============================================================
-
 class HomeScreen extends StatefulWidget {
   @override
   _HomeScreenState createState() => _HomeScreenState();
@@ -90,11 +86,13 @@ class _HomeScreenState extends State<HomeScreen> {
   String _digitBuffer = '';
   Timer? _digitTimer;
 
+  // ---------- 自动加载标记 ----------
+  bool _autoLoaded = false;
+
   // ============================================================
   // 工具函数（强制东八区）
   // ============================================================
 
-  /// 获取当前时间（强制东八区，无论代理在哪个时区）
   DateTime get _beijingNow => EpgParser.beijingNow;
 
   String _formatTime(DateTime time) => EpgParser.formatBeijingTime(time);
@@ -119,8 +117,25 @@ class _HomeScreenState extends State<HomeScreen> {
     await _initLayoutConfigFile();
     await _loadLayoutConfig();
     _initEpgScheduler();
-
     _startEpgInfoTimer();
+    if (mounted) setState(() => isLoading = false);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!_autoLoaded && channels.isEmpty) {
+      final settings = Provider.of<SettingsService>(context);
+      if (settings.subscriptions.isNotEmpty) {
+        _autoLoaded = true;
+        final selectedSubs = settings.subscriptions.where((s) => s.selected).toList();
+        if (selectedSubs.isNotEmpty) {
+          _loadSubscriptionData(selectedSubs.first);
+        } else {
+          _loadSubscriptionData(settings.subscriptions.first);
+        }
+      }
+    }
   }
 
   // ========== 布局配置 ==========
@@ -226,13 +241,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _loadAllEpg() async {
     try {
-      // 先预热缓存（从数据库或 JSON 文件）
       await EpgParser.warmUpCache();
-
-      // 检查是否需要从网络更新
       final isDbEmpty = await EpgDatabaseService.isEmpty();
       if (isDbEmpty) {
-        // 尝试强制刷新一次
         try {
           await EpgParser.forceRefresh();
         } catch (e) {
@@ -476,7 +487,6 @@ class _HomeScreenState extends State<HomeScreen> {
       currentSubName = subName;
     });
 
-    // EPG 在后台异步加载，不阻塞
     _loadAllEpg();
     if (currentChannel != null) {
       _updateEpgInfo();
@@ -578,7 +588,6 @@ class _HomeScreenState extends State<HomeScreen> {
         return Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // 频道名称和图标
             Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
@@ -602,7 +611,6 @@ class _HomeScreenState extends State<HomeScreen> {
               ],
             ),
             const SizedBox(height: 8),
-            // 当前节目
             if (current != null)
               Column(
                 children: [
@@ -641,7 +649,6 @@ class _HomeScreenState extends State<HomeScreen> {
                   shadows: [Shadow(blurRadius: 4, color: Colors.black)],
                 ),
               ),
-            // 下一个节目
             if (next != null)
               Padding(
                 padding: const EdgeInsets.only(top: 4),
@@ -1101,7 +1108,6 @@ class _HomeScreenState extends State<HomeScreen> {
     // 原为空实现，保持原样
   }
 
-  // ⭐ 修改：跳转到设置页
   void _showAddEpgDialog() {
     Navigator.push(
       context,
