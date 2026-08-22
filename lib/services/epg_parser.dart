@@ -10,6 +10,7 @@ import 'package:collection/collection.dart';
 import '../models/epg_program.dart';
 import 'log_service.dart';
 import 'epg_database_service.dart';
+import 'config_service.dart';  // 新增导入
 
 // ============================================================
 // EpgParser —— 酷9方案：精准匹配 + 东八区强制 + 秒级解析
@@ -345,15 +346,38 @@ class EpgParser {
   }
 
   // ---------- 设置持久化 ----------
+  // ⭐ 修改后的 _loadSettings()：支持从 configuration.json 读取默认 EPG URL
   static Future<Map<String, dynamic>> _loadSettings() async {
     try {
       final dir = await getApplicationDocumentsDirectory();
       final file = File('${dir.path}/epg_settings.json');
       if (await file.exists()) {
         final content = await file.readAsString();
-        return jsonDecode(content) as Map<String, dynamic>;
+        final settings = jsonDecode(content) as Map<String, dynamic>;
+        if (settings[_epgUrlKey] != null) return settings;
       }
     } catch (_) {}
+
+    // ===== 新增：本地没有 EPG 设置时，从 configuration.json 读取默认配置 =====
+    try {
+      final config = await ConfigService.getConfig();
+      final inner = config['Configuration'] as Map<String, dynamic>?;
+      final epgUrls = inner?['EPG_URLS'] as String?;
+      if (epgUrls != null && epgUrls.isNotEmpty) {
+        final parts = epgUrls.split('||');
+        for (final part in parts) {
+          final trimmed = part.trim();
+          if (trimmed.isEmpty) continue;
+          final idx = trimmed.lastIndexOf('\$');
+          final url = idx > 0 ? trimmed.substring(0, idx).trim() : trimmed;
+          if (url.isNotEmpty) {
+            return {_epgUrlKey: url};
+          }
+        }
+      }
+    } catch (_) {}
+    // =======================================================================
+
     return {};
   }
 
