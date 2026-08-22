@@ -23,12 +23,10 @@ class _ChannelLogoState extends State<_ChannelLogo> {
     _load();
   }
 
-  // FIX: 频道名变化时重新加载
   @override
   void didUpdateWidget(_ChannelLogo oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.channelName != widget.channelName ||
-        oldWidget.fallbackUrl != widget.fallbackUrl) {
+    if (oldWidget.channelName != widget.channelName) {
       if (mounted) setState(() => _logoFile = null);
       _load();
     }
@@ -100,7 +98,6 @@ class ChannelList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // FIX: 给 ListView 加 key 防止 State 复用导致台标错乱
     return ListView.builder(
       key: ValueKey('cl_${channels.hashCode}'),
       itemCount: channels.length,
