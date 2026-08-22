@@ -11,6 +11,7 @@ import 'package:xml/xml.dart';
 import '../models/epg_program.dart';
 import 'log_service.dart';
 import 'config_service.dart';
+import 'epg_database_service.dart';
 
 // ============================================================
 // 顶层 Isolate 函数（不可访问静态成员，必须用顶级函数）
