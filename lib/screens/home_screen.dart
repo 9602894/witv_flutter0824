@@ -1095,6 +1095,17 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  void _showAddSubscriptionDialog() {/* ... */}
-  void _showAddEpgDialog() {/* ... */}
+  // ========== 对话框方法 ==========
+
+  void _showAddSubscriptionDialog() {
+    // 原为空实现，保持原样
+  }
+
+  // ⭐ 修改：跳转到设置页
+  void _showAddEpgDialog() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => SettingsScreen()),
+    ).then((_) => setState(() {}));
+  }
 }
