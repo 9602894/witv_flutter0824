@@ -116,28 +116,28 @@ class _HomeScreenState extends State<HomeScreen> {
     _initAsync();
   }
 
-  // FIX: 启动时直接强制加载 EPG，不依赖 _applyGroupMap
+  // 初始化：加载布局配置、Logo配置，并直接加载EPG
   Future<void> _initAsync() async {
     LogService.write('主页初始化');
     await _initLayoutConfigFile();
     await _loadLayoutConfig();
 
-    // FIX: 诊断 Logo 配置 + 首次自动设置默认来源
+    // 检查Logo配置，未配置则设置默认GitHub源
     final logoSources = await _logoService.getEnabledSources();
     LogService.write('Logo: 已配置来源 ${logoSources.length} 个: ${logoSources.map((s) => s.name).join(', ')}');
-
-    // 如果未配置，自动设置默认来源
     final hasLogoSource = await _logoService.hasConfiguredSource();
     if (!hasLogoSource) {
       LogService.write('Logo: 首次使用，自动设置默认来源 GitHub');
       await _logoService.setEnabledSources([LogoSource.github]);
     }
 
-    // 启动时直接强制加载 EPG
-    await _loadAllEpg();
-
+    // 启动EPG调度器（定时更新）
     _initEpgScheduler();
     _startEpgInfoTimer();
+
+    // FIX: 启动时直接加载 EPG，不依赖 _applyGroupMap
+    await EpgParser.init();
+
     if (mounted) setState(() => isLoading = false);
   }
 
@@ -245,11 +245,9 @@ class _HomeScreenState extends State<HomeScreen> {
     if (_isEpgUpdating) return;
     _isEpgUpdating = true;
     try {
-      final updated = await EpgParser.checkForUpdate();
-      if (updated) {
-        LogService.write('EPG 已更新');
-        await _updateEpgInfo();
-      }
+      // 使用新的 init 方法检查更新（会判断6小时间隔）
+      await EpgParser.init();
+      await _updateEpgInfo();
     } catch (e) {
       LogService.write('EPG 更新检查失败: $e');
     } finally {
@@ -257,36 +255,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // ========== EPG 加载（强制下载，不做任何条件判断） ==========
-
-  Future<void> _loadAllEpg() async {
-    try {
-      LogService.write('EPG: ===== _loadAllEpg 强制开始 =====');
-
-      // 1. 预热（加载 epg_data.json 名称映射）
-      await EpgParser.warmUpCache();
-      LogService.write('EPG: warmUpCache 完成');
-
-      // 2. 强制清空旧数据（确保干净状态）
-      await EpgDatabaseService.clearAll();
-      LogService.write('EPG: 数据库已清空');
-
-      // 3. 直接强制下载，不做任何判断
-      LogService.write('EPG: 开始强制下载 XML...');
-      await EpgParser.forceRefresh();
-
-      // 4. 验证结果
-      final programCount = await EpgDatabaseService.getProgramCount();
-      final channelCount = await EpgDatabaseService.getChannelCount();
-      LogService.write('EPG: 下载完成 - $channelCount 频道, $programCount 节目');
-      LogService.write('EPG: ===== _loadAllEpg 结束 =====');
-
-    } catch (e, stack) {
-      LogService.writeCrashLog('EPG加载失败: $e', stack);
-    }
-  }
-
-  // ========== EPG 查询（数据库版，三层精准匹配） ==========
+  // ========== EPG 查询（数据库版） ==========
 
   Future<EpgProgram?> _getCurrentProgram(String channelName) async {
     return await EpgParser.getCurrentProgram(channelName);
@@ -312,7 +281,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // ========== 每秒刷新 EPG 信息（用于进度条和当前节目切换） ==========
+  // ========== 每秒刷新 EPG 信息 ==========
 
   void _startEpgInfoTimer() {
     _epgInfoTimer = Timer.periodic(const Duration(seconds: 1), (_) {
@@ -452,7 +421,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // ========== 应用分组映射（FIX: 删除 _loadAllEpg 调用） ==========
+  // ========== 应用分组映射（不再调用 EPG 加载） ==========
 
   void _applyGroupMap(Map<String, List<Channel>> groupMap, String subName) {
     if (groupMap.isEmpty) return;
@@ -518,12 +487,20 @@ class _HomeScreenState extends State<HomeScreen> {
       currentSubName = subName;
     });
 
-    // FIX: 删除 _loadAllEpg() 调用，避免重复
-    // _loadAllEpg();  // 已删除
-
+    // 不再调用 _loadAllEpg()
     if (currentChannel != null) {
       _updateEpgInfo();
     }
+  }
+
+  // ============================================================
+  // 以下方法已废弃，保留空实现以避免外部调用报错
+  // ============================================================
+  // 原 _loadAllEpg() 已删除，改用 EpgParser.init()
+  // 保留空方法以防其他地方调用（但实际不会）
+  @deprecated
+  Future<void> _loadAllEpg() async {
+    await EpgParser.init();
   }
 
   // ========== 遥控器按键 ==========
