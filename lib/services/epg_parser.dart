@@ -14,6 +14,18 @@ import 'epg_database_service.dart';
 import 'config_service.dart';
 
 // ============================================================
+// FIX: 移到顶层，不能在类内部
+// ============================================================
+class _EpgParsedResult {
+  final Map<String, List<EpgProgram>> programs;
+  final Map<String, String> icons;
+  final Map<String, String> displayNames;
+  final int count;
+  _EpgParsedResult(this.programs, this.icons, this.displayNames, this.count);
+}
+// ============================================================
+
+// ============================================================
 // EpgParser —— 酷9方案：精准匹配 + 东八区强制 + 秒级解析
 // ============================================================
 
@@ -307,15 +319,6 @@ class EpgParser {
   // ============================================================
   // Isolate 反序列化（避免主线程阻塞）
   // ============================================================
-
-  /// FIX: 新增数据类，用于 Isolate 间传递解析结果
-  class _EpgParsedResult {
-    final Map<String, List<EpgProgram>> programs;
-    final Map<String, String> icons;
-    final Map<String, String> displayNames;
-    final int count;
-    _EpgParsedResult(this.programs, this.icons, this.displayNames, this.count);
-  }
 
   /// FIX: 在 Isolate 中反序列化 JSON，避免主线程阻塞
   static _EpgParsedResult _deserializeEpgResult(String resultPath) {
