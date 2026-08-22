@@ -116,6 +116,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _initAsync();
   }
 
+  // FIX: 启动时直接强制加载 EPG，不依赖 _applyGroupMap
   Future<void> _initAsync() async {
     LogService.write('主页初始化');
     await _initLayoutConfigFile();
@@ -131,6 +132,9 @@ class _HomeScreenState extends State<HomeScreen> {
       LogService.write('Logo: 首次使用，自动设置默认来源 GitHub');
       await _logoService.setEnabledSources([LogoSource.github]);
     }
+
+    // 启动时直接强制加载 EPG
+    await _loadAllEpg();
 
     _initEpgScheduler();
     _startEpgInfoTimer();
@@ -253,34 +257,32 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // ========== EPG 加载（酷9方案：后台静默，绝不阻塞） ==========
+  // ========== EPG 加载（强制下载，不做任何条件判断） ==========
 
   Future<void> _loadAllEpg() async {
     try {
-      LogService.write('EPG: ===== _loadAllEpg 开始 =====');
-      await EpgParser.warmUpCache();
+      LogService.write('EPG: ===== _loadAllEpg 强制开始 =====');
 
+      // 1. 预热（加载 epg_data.json 名称映射）
+      await EpgParser.warmUpCache();
+      LogService.write('EPG: warmUpCache 完成');
+
+      // 2. 强制清空旧数据（确保干净状态）
+      await EpgDatabaseService.clearAll();
+      LogService.write('EPG: 数据库已清空');
+
+      // 3. 直接强制下载，不做任何判断
+      LogService.write('EPG: 开始强制下载 XML...');
+      await EpgParser.forceRefresh();
+
+      // 4. 验证结果
       final programCount = await EpgDatabaseService.getProgramCount();
       final channelCount = await EpgDatabaseService.getChannelCount();
-      LogService.write('EPG: 当前数据库状态 - programs=$programCount, channels=$channelCount');
-
-      if (programCount == 0) {
-        LogService.write('EPG: programs 表为空，开始强制下载...');
-        try {
-          await EpgParser.forceRefresh();
-          final afterCount = await EpgDatabaseService.getProgramCount();
-          LogService.write('EPG: 强制下载完成，当前节目数=$afterCount');
-        } catch (e, stack) {
-          LogService.writeCrashLog('EPG首次加载失败: $e', stack);
-        }
-      } else {
-        LogService.write('EPG: 数据库已有 $programCount 条节目，跳过下载');
-        // 后台检查更新（不阻塞播放）
-        _checkEpgUpdate();
-      }
+      LogService.write('EPG: 下载完成 - $channelCount 频道, $programCount 节目');
       LogService.write('EPG: ===== _loadAllEpg 结束 =====');
+
     } catch (e, stack) {
-      LogService.writeCrashLog('加载EPG失败: $e', stack);
+      LogService.writeCrashLog('EPG加载失败: $e', stack);
     }
   }
 
@@ -450,7 +452,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // ========== 应用分组映射 ==========
+  // ========== 应用分组映射（FIX: 删除 _loadAllEpg 调用） ==========
 
   void _applyGroupMap(Map<String, List<Channel>> groupMap, String subName) {
     if (groupMap.isEmpty) return;
@@ -516,7 +518,9 @@ class _HomeScreenState extends State<HomeScreen> {
       currentSubName = subName;
     });
 
-    _loadAllEpg();
+    // FIX: 删除 _loadAllEpg() 调用，避免重复
+    // _loadAllEpg();  // 已删除
+
     if (currentChannel != null) {
       _updateEpgInfo();
     }
