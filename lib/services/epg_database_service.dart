@@ -269,6 +269,13 @@ class EpgDatabaseService {
     return null;
   }
 
+  /// 获取全部 name -> epgid 映射（供 LogoService 使用）
+  static Future<Map<String, String>> getAllMappings() async {
+    final db = await _database;
+    final rows = await db.query(_mappingsTable, columns: ['name', 'epgid']);
+    return {for (var r in rows) r['name'] as String: r['epgid'] as String};
+  }
+
   // ==================== 写入与清理 ====================
 
   static Future<void> insertPrograms(
