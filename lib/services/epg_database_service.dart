@@ -79,38 +79,33 @@ class EpgDatabaseService {
     return count == 0;
   }
 
-  static Future<void> batchUpdateDisplayNames(Map<String, String> displayNames) async {
-    if (displayNames.isEmpty) return;
+  // 删除旧方法 batchUpdateDisplayNames 和 batchUpdateIcons
+  // 新增合并插入，避免 REPLACE 覆盖
+  static Future<void> batchUpdateChannels(
+    Map<String, String> displayNames,
+    Map<String, String> icons,
+  ) async {
+    if (displayNames.isEmpty && icons.isEmpty) return;
     final db = await database;
-    await db.transaction((txn) async {
-      final batch = txn.batch();
-      for (final entry in displayNames.entries) {
-        batch.insert(
-          'channels',
-          {'channel_id': entry.key, 'display_name': entry.value},
-          conflictAlgorithm: ConflictAlgorithm.replace,
-        );
-      }
-      await batch.commit(noResult: true);
-    });
-    LogService.write('EPG: 批量更新 display-name 完成，共 ${displayNames.length} 条');
-  }
 
-  static Future<void> batchUpdateIcons(Map<String, String> icons) async {
-    if (icons.isEmpty) return;
-    final db = await database;
+    final allIds = {...displayNames.keys, ...icons.keys};
+
     await db.transaction((txn) async {
       final batch = txn.batch();
-      for (final entry in icons.entries) {
+      for (final id in allIds) {
         batch.insert(
           'channels',
-          {'channel_id': entry.key, 'icon': entry.value},
+          {
+            'channel_id': id,
+            'display_name': displayNames[id],
+            'icon': icons[id],
+          },
           conflictAlgorithm: ConflictAlgorithm.replace,
         );
       }
       await batch.commit(noResult: true);
     });
-    LogService.write('EPG: 批量更新图标完成，共 ${icons.length} 条');
+    LogService.write('EPG: 频道信息写入完成 ${allIds.length} 条');
   }
 
   static Future<void> insertProgramsBatch(
