@@ -119,7 +119,7 @@ class _HomeScreenState extends State<HomeScreen> {
     await _initLayoutConfigFile();
     await _loadLayoutConfig();
     _initEpgScheduler();
-    await _init();
+
     _startEpgInfoTimer();
   }
 
