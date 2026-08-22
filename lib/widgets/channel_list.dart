@@ -16,7 +16,6 @@ class _ChannelLogo extends StatefulWidget {
 
 class _ChannelLogoState extends State<_ChannelLogo> {
   File? _logoFile;
-  bool _checked = false;
 
   @override
   void initState() {
@@ -24,18 +23,12 @@ class _ChannelLogoState extends State<_ChannelLogo> {
     _load();
   }
 
-  // FIX: 当频道名变化时（切换分组），必须重新加载台标
+  // FIX: 频道名变化时必须重新加载
   @override
   void didUpdateWidget(_ChannelLogo oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.channelName != widget.channelName ||
-        oldWidget.fallbackUrl != widget.fallbackUrl) {
-      if (mounted) {
-        setState(() {
-          _logoFile = null;
-          _checked = false;
-        });
-      }
+    if (oldWidget.channelName != widget.channelName) {
+      if (mounted) setState(() => _logoFile = null);
       _load();
     }
   }
@@ -43,7 +36,6 @@ class _ChannelLogoState extends State<_ChannelLogo> {
   Future<void> _load() async {
     final service = LogoService();
 
-    // 先查 epgId 缓存（最快路径）
     final epgId = await service.getEpgIdAsync(widget.channelName);
     final cachedByEpgId = service.getLogoByEpgIdSync(epgId);
     if (cachedByEpgId != null && cachedByEpgId.existsSync()) {
@@ -51,14 +43,12 @@ class _ChannelLogoState extends State<_ChannelLogo> {
       return;
     }
 
-    // 再查 channelName 缓存
     final cached = service.getLogoSync(widget.channelName);
     if (cached != null && cached.existsSync()) {
       if (mounted) setState(() => _logoFile = cached);
       return;
     }
 
-    // 异步下载（只触发一次）
     final file = await service.getLogo(widget.channelName);
     if (mounted && file != null && file.existsSync()) {
       setState(() => _logoFile = file);
@@ -112,9 +102,9 @@ class ChannelList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // FIX: 频道列表变化时（切分组），强制重建避免 State 复用
+    // FIX: 给 ListView 加 key 防止 State 复用导致台标错乱
     return ListView.builder(
-      key: ValueKey(channels.map((c) => c.name).join('|')),
+      key: ValueKey('channel_list_${channels.length}_${channels.isNotEmpty ? channels.first.name : ''}'),
       itemCount: channels.length,
       itemBuilder: (context, index) {
         final channel = channels[index];
