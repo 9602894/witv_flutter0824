@@ -90,18 +90,28 @@ class LogoService {
   Future<List<LogoSource>> getEnabledSources() async {
     final prefs = await SharedPreferences.getInstance();
     final jsonStr = prefs.getString(_prefsKeySources);
-    if (jsonStr == null || jsonStr.isEmpty) return [];
+    if (jsonStr == null || jsonStr.isEmpty) {
+      // FIX: 如果没有配置，默认启用 GitHub 来源
+      LogService.write('Logo: 未找到配置，使用默认来源 GitHub');
+      return [LogoSource.github];
+    }
     try {
       final list = jsonDecode(jsonStr) as List<dynamic>;
-      return list
+      final sources = list
           .map((e) => LogoSource.values.firstWhere(
                 (s) => s.name == e,
                 orElse: () => LogoSource.github,
               ))
           .where((s) => LogoSource.values.contains(s))
           .toList();
-    } catch (_) {
-      return [];
+      if (sources.isEmpty) {
+        LogService.write('Logo: 配置解析为空，使用默认来源 GitHub');
+        return [LogoSource.github];
+      }
+      return sources;
+    } catch (e) {
+      LogService.write('Logo: 配置解析失败: $e，使用默认来源 GitHub');
+      return [LogoSource.github];
     }
   }
 
