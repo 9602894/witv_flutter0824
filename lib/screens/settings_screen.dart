@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../services/settings_service.dart';
 import '../services/log_service.dart';
 import '../services/config_service.dart';
+import '../services/epg_parser.dart';          // 新增导入
 import '../models/subscription.dart';
 import '../widgets/logo_source_dialog.dart';
 import 'dart:io';
@@ -16,13 +17,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _urlController = TextEditingController();
   final TextEditingController _tokenController = TextEditingController();
+  final TextEditingController _epgUrlController = TextEditingController(); // 新增
   bool _isAdding = false;
   bool _isLoadingToken = true;
+  bool _isSavingEpg = false;                    // 新增
 
   @override
   void initState() {
     super.initState();
     _loadToken();
+    _loadCurrentEpgUrl();                       // 加载当前 EPG URL 填入输入框
+  }
+
+  // 加载当前 EPG URL 到输入框
+  Future<void> _loadCurrentEpgUrl() async {
+    final url = await EpgParser.getEpgUrl();
+    if (mounted) {
+      _epgUrlController.text = url ?? '';
+    }
   }
 
   Future<void> _loadToken() async {
@@ -40,7 +52,37 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _nameController.dispose();
     _urlController.dispose();
     _tokenController.dispose();
+    _epgUrlController.dispose();  // 释放
     super.dispose();
+  }
+
+  // ---------- 获取当前 EPG URL（供 FutureBuilder 显示） ----------
+  Future<String?> _getCurrentEpgUrl() async {
+    return await EpgParser.getEpgUrl();
+  }
+
+  // ---------- 保存 EPG URL ----------
+  Future<void> _saveEpgUrl() async {
+    final url = _epgUrlController.text.trim();
+    if (url.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('请输入有效的 EPG URL')),
+      );
+      return;
+    }
+    setState(() => _isSavingEpg = true);
+    try {
+      await EpgParser.saveEpgUrl(url);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('EPG URL 已保存')),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('保存失败: $e')),
+      );
+    } finally {
+      setState(() => _isSavingEpg = false);
+    }
   }
 
   @override
@@ -130,6 +172,55 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
 
+          // ======================== 新增：EPG 订阅管理 ========================
+          Card(
+            margin: EdgeInsets.all(8),
+            child: Padding(
+              padding: EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('EPG 订阅管理', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                  SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _epgUrlController,
+                          decoration: InputDecoration(
+                            labelText: 'EPG URL',
+                            hintText: '输入 EPG XML 地址',
+                            border: OutlineInputBorder(),
+                            isDense: true,
+                          ),
+                        ),
+                      ),
+                      SizedBox(width: 8),
+                      ElevatedButton(
+                        onPressed: _isSavingEpg ? null : _saveEpgUrl,
+                        child: _isSavingEpg
+                            ? SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                            : Text('保存'),
+                      ),
+                    ],
+                  ),
+                  SizedBox(height: 8),
+                  FutureBuilder<String?>(
+                    future: _getCurrentEpgUrl(),
+                    builder: (context, snapshot) {
+                      final url = snapshot.data;
+                      if (url != null && url.isNotEmpty) {
+                        return Text('当前: $url', style: TextStyle(fontSize: 12, color: Colors.grey), maxLines: 1, overflow: TextOverflow.ellipsis);
+                      }
+                      return SizedBox.shrink();
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ),
+          // =================================================================
+
           // ---------- GitHub 令牌设置 ----------
           Card(
             margin: EdgeInsets.all(8),
@@ -194,7 +285,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
 
-          // ---------- 解码器选择（已更新详细说明） ----------
+          // ---------- 解码器选择 ----------
           Card(
             margin: EdgeInsets.all(8),
             child: Padding(
