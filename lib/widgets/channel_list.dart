@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
 import '../models/channel.dart';
 import '../models/epg_program.dart';
@@ -8,138 +7,88 @@ class ChannelList extends StatelessWidget {
   final List<Channel> channels;
   final Channel? selectedChannel;
   final ValueChanged<Channel> onSelect;
-  final Map<String, List<EpgProgram>> epgMap;
+  final Map<String, List<EpgProgram>> epgMap; // 废弃，保留兼容
   final bool showChannelNumber;
   final bool showLogo;
+  final EpgProgram? currentEpgProgram; // 新增：当前节目
+  final EpgProgram? nextEpgProgram; // 新增：下一个节目
 
   const ChannelList({
     Key? key,
     required this.channels,
-    this.selectedChannel,
+    required this.selectedChannel,
     required this.onSelect,
     required this.epgMap,
     this.showChannelNumber = false,
     this.showLogo = true,
+    this.currentEpgProgram,
+    this.nextEpgProgram,
   }) : super(key: key);
-
-  DateTime _getNow() => DateTime.now();
-  String _formatTime(DateTime time) {
-    return '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
-  }
 
   @override
   Widget build(BuildContext context) {
     return ListView.builder(
       itemCount: channels.length,
       itemBuilder: (context, index) {
-        final ch = channels[index];
-        final isSelected = ch == selectedChannel;
-        final epgList = epgMap[ch.name] ?? <EpgProgram>[];
-        String? currentTitle;
-        if (epgList.isNotEmpty) {
-          final now = _getNow();
-          for (var prog in epgList) {
-            if (prog.start.isBefore(now) && prog.end.isAfter(now)) {
-              currentTitle = '${_formatTime(prog.start)}-${_formatTime(prog.end)} ${prog.title}';
-              break;
-            }
-          }
-        }
-
-        Widget leadingWidget;
-        if (showLogo) {
-          leadingWidget = FutureBuilder<File?>(
-            future: LogoService().getLogo(ch.name),
-            builder: (context, snapshot) {
-              if (snapshot.connectionState == ConnectionState.waiting) {
-                return SizedBox(
-                  width: 80,
-                  height: 80,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white70),
-                );
-              } else if (snapshot.hasData && snapshot.data != null) {
-                return Container(
-                  color: Colors.transparent,
-                  child: Image.file(
-                    snapshot.data!,
-                    width: 80,
-                    height: 80,
-                    fit: BoxFit.contain,
-                    errorBuilder: (_, __, ___) => _defaultLogo(ch.name, size: 80),
-                  ),
-                );
-              } else {
-                return _defaultLogo(ch.name, size: 80);
-              }
-            },
-          );
-        } else {
-          leadingWidget = _defaultLogo(ch.name, size: 80);
-        }
-
+        final channel = channels[index];
+        final isSelected = channel == selectedChannel;
         return ListTile(
-          selected: isSelected,
-          selectedTileColor: Colors.blue.withOpacity(0.3),
-          leading: showChannelNumber
-              ? Text(
-                  (index + 1).toString().padLeft(4, '0'),
-                  style: TextStyle(color: Colors.white70, fontSize: 12),
-                )
-              : leadingWidget,
-          title: Row(
-            children: [
-              if (ch.number != null)
-                Text(
-                  '${ch.number}  ',
-                  style: TextStyle(
-                    color: isSelected ? Colors.yellow : Colors.white70,
-                    fontSize: 12,
-                  ),
-                ),
-              Expanded(
-                child: Text(
-                  ch.name,
-                  style: TextStyle(
-                    color: isSelected ? Colors.yellow : Colors.white,
-                    fontSize: 13,
-                  ),
-                ),
-              ),
-            ],
+          dense: true,
+          leading: showLogo ? _buildLogo(channel) : null,
+          title: Text(
+            showChannelNumber && channel.number != null
+                ? '${channel.number}. ${channel.name}'
+                : channel.name,
+            style: TextStyle(
+              color: isSelected ? Colors.yellow : Colors.white,
+              fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+              fontSize: 14,
+            ),
           ),
-          subtitle: currentTitle != null
-              ? Text(
-                  currentTitle,
-                  style: TextStyle(fontSize: 11, color: Colors.grey),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+          subtitle: isSelected && (currentEpgProgram != null || nextEpgProgram != null)
+              ? Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (currentEpgProgram != null)
+                      Text(
+                        '▶ ${currentEpgProgram!.title}',
+                        style: const TextStyle(color: Colors.green, fontSize: 12),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    if (nextEpgProgram != null)
+                      Text(
+                        '▷ ${nextEpgProgram!.title}',
+                        style: const TextStyle(color: Colors.white70, fontSize: 11),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                  ],
                 )
               : null,
-          onTap: () => onSelect(ch),
+          selected: isSelected,
+          onTap: () => onSelect(channel),
         );
       },
     );
   }
 
-  Widget _defaultLogo(String channelName, {double size = 80}) {
-    final firstChar = channelName.isNotEmpty ? channelName[0] : '?';
-    return Container(
-      width: size,
-      height: size,
-      decoration: BoxDecoration(
-        color: Colors.transparent,
-        shape: BoxShape.circle,
-      ),
-      child: Center(
-        child: Text(
-          firstChar,
-          style: TextStyle(
-            color: Colors.white,
-            fontSize: size * 0.5,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-      ),
+  Widget _buildLogo(Channel channel) {
+    final logoService = LogoService();
+    return FutureBuilder<String?>(
+      future: logoService.getLogoUrl(channel.name, channel.logoUrl),
+      builder: (context, snapshot) {
+        final url = snapshot.data;
+        if (url == null || url.isEmpty) {
+          return const Icon(Icons.tv, color: Colors.white54, size: 24);
+        }
+        return Image.network(
+          url,
+          width: 32,
+          height: 32,
+          errorBuilder: (_, __, ___) => const Icon(Icons.tv, color: Colors.white54, size: 24),
+        );
+      },
     );
   }
 }
