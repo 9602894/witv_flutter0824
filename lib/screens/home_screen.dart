@@ -11,7 +11,7 @@ import '../services/playlist_parser.dart';
 import '../services/epg_parser.dart';
 import '../services/log_service.dart';
 import '../services/logo_service.dart';
-import '../services/epg_database_service.dart';
+// import '../services/epg_database_service.dart';  // 已删除
 import '../models/channel.dart';
 import '../models/epg_program.dart';
 import '../models/subscription.dart';
@@ -116,7 +116,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _initAsync();
   }
 
-  // 初始化：加载布局配置、Logo配置，并直接加载EPG
+  // FIX: 启动时直接加载 EPG
   Future<void> _initAsync() async {
     LogService.write('主页初始化');
     await _initLayoutConfigFile();
@@ -245,7 +245,6 @@ class _HomeScreenState extends State<HomeScreen> {
     if (_isEpgUpdating) return;
     _isEpgUpdating = true;
     try {
-      // 使用新的 init 方法检查更新（会判断6小时间隔）
       await EpgParser.init();
       await _updateEpgInfo();
     } catch (e) {
@@ -255,7 +254,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // ========== EPG 查询（数据库版） ==========
+  // ========== EPG 查询 ==========
 
   Future<EpgProgram?> _getCurrentProgram(String channelName) async {
     return await EpgParser.getCurrentProgram(channelName);
@@ -421,7 +420,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // ========== 应用分组映射（不再调用 EPG 加载） ==========
+  // ========== 应用分组映射（已删除 _loadAllEpg 调用） ==========
 
   void _applyGroupMap(Map<String, List<Channel>> groupMap, String subName) {
     if (groupMap.isEmpty) return;
@@ -487,20 +486,10 @@ class _HomeScreenState extends State<HomeScreen> {
       currentSubName = subName;
     });
 
-    // 不再调用 _loadAllEpg()
+    // 已删除 _loadAllEpg() 调用
     if (currentChannel != null) {
       _updateEpgInfo();
     }
-  }
-
-  // ============================================================
-  // 以下方法已废弃，保留空实现以避免外部调用报错
-  // ============================================================
-  // 原 _loadAllEpg() 已删除，改用 EpgParser.init()
-  // 保留空方法以防其他地方调用（但实际不会）
-  @deprecated
-  Future<void> _loadAllEpg() async {
-    await EpgParser.init();
   }
 
   // ========== 遥控器按键 ==========
