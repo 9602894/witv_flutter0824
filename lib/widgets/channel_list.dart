@@ -23,11 +23,12 @@ class _ChannelLogoState extends State<_ChannelLogo> {
     _load();
   }
 
-  // FIX: 频道名变化时必须重新加载
+  // FIX: 频道名变化时重新加载
   @override
   void didUpdateWidget(_ChannelLogo oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.channelName != widget.channelName) {
+    if (oldWidget.channelName != widget.channelName ||
+        oldWidget.fallbackUrl != widget.fallbackUrl) {
       if (mounted) setState(() => _logoFile = null);
       _load();
     }
@@ -35,20 +36,17 @@ class _ChannelLogoState extends State<_ChannelLogo> {
 
   Future<void> _load() async {
     final service = LogoService();
-
     final epgId = await service.getEpgIdAsync(widget.channelName);
     final cachedByEpgId = service.getLogoByEpgIdSync(epgId);
     if (cachedByEpgId != null && cachedByEpgId.existsSync()) {
       if (mounted) setState(() => _logoFile = cachedByEpgId);
       return;
     }
-
     final cached = service.getLogoSync(widget.channelName);
     if (cached != null && cached.existsSync()) {
       if (mounted) setState(() => _logoFile = cached);
       return;
     }
-
     final file = await service.getLogo(widget.channelName);
     if (mounted && file != null && file.existsSync()) {
       setState(() => _logoFile = file);
@@ -104,7 +102,7 @@ class ChannelList extends StatelessWidget {
   Widget build(BuildContext context) {
     // FIX: 给 ListView 加 key 防止 State 复用导致台标错乱
     return ListView.builder(
-      key: ValueKey('channel_list_${channels.length}_${channels.isNotEmpty ? channels.first.name : ''}'),
+      key: ValueKey('cl_${channels.hashCode}'),
       itemCount: channels.length,
       itemBuilder: (context, index) {
         final channel = channels[index];
