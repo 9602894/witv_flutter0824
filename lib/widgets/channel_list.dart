@@ -24,6 +24,22 @@ class _ChannelLogoState extends State<_ChannelLogo> {
     _load();
   }
 
+  // FIX: 当频道名变化时（切换分组），必须重新加载台标
+  @override
+  void didUpdateWidget(_ChannelLogo oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.channelName != widget.channelName ||
+        oldWidget.fallbackUrl != widget.fallbackUrl) {
+      if (mounted) {
+        setState(() {
+          _logoFile = null;
+          _checked = false;
+        });
+      }
+      _load();
+    }
+  }
+
   Future<void> _load() async {
     final service = LogoService();
 
@@ -59,7 +75,6 @@ class _ChannelLogoState extends State<_ChannelLogo> {
         errorBuilder: (_, __, ___) => const Icon(Icons.tv, color: Colors.white54, size: 24),
       );
     }
-    // 降级：M3U 自带 URL
     if (widget.fallbackUrl != null && widget.fallbackUrl!.isNotEmpty) {
       return Image.network(
         widget.fallbackUrl!,
@@ -97,7 +112,9 @@ class ChannelList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // FIX: 频道列表变化时（切分组），强制重建避免 State 复用
     return ListView.builder(
+      key: ValueKey(channels.map((c) => c.name).join('|')),
       itemCount: channels.length,
       itemBuilder: (context, index) {
         final channel = channels[index];
