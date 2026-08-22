@@ -278,8 +278,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<EpgProgram?> _getCurrentProgram(String channelName) async {
     final now = _getNow(); // UTC
-    final programs = await EpgDatabaseService.getCurrentPrograms(channelName, now);
-    return programs.isNotEmpty ? programs.first : null;
+    return await EpgDatabaseService.getCurrentProgram(channelName, now);
   }
 
   Future<EpgProgram?> _getNextProgram(String channelName) async {
