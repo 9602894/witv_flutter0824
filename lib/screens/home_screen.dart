@@ -11,7 +11,6 @@ import '../services/playlist_parser.dart';
 import '../services/epg_parser.dart';
 import '../services/log_service.dart';
 import '../services/logo_service.dart';
-// import '../services/epg_database_service.dart';  // 已删除
 import '../models/channel.dart';
 import '../models/epg_program.dart';
 import '../models/subscription.dart';
@@ -116,7 +115,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _initAsync();
   }
 
-  // FIX: 启动时直接加载 EPG
+  // FIX: 启动时直接加载 EPG（后台，不阻塞）
   Future<void> _initAsync() async {
     LogService.write('主页初始化');
     await _initLayoutConfigFile();
@@ -135,10 +134,23 @@ class _HomeScreenState extends State<HomeScreen> {
     _initEpgScheduler();
     _startEpgInfoTimer();
 
-    // FIX: 启动时直接加载 EPG，不依赖 _applyGroupMap
-    await EpgParser.init();
+    // FIX: 后台加载 EPG，不阻塞启动和播放
+    _loadEpgInBackground();
 
     if (mounted) setState(() => isLoading = false);
+  }
+
+  // 新增：后台加载 EPG
+  void _loadEpgInBackground() {
+    EpgParser.init().then((_) async {
+      LogService.write('EPG: 后台加载完成');
+      // EPG 加载完成后，刷新当前频道的节目信息
+      if (currentChannel != null && mounted) {
+        await _updateEpgInfo();
+      }
+    }).catchError((e, stack) {
+      LogService.writeCrashLog('EPG后台加载失败: $e', stack);
+    });
   }
 
   @override
