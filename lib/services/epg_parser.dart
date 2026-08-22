@@ -78,9 +78,17 @@ Future<Map<String, dynamic>> _parseEpgXmlIsolate(String xmlContent) async {
 
   stopwatch.stop();
 
-  // ✅ 写入 SQLite 数据库（注意：这里 programs 是 Map<String, List<Map<String,dynamic>>>，
-  // 假设 EpgDatabaseService.insertPrograms 能接受此格式，否则需先转换）
-  await EpgDatabaseService.insertPrograms(programs, icons);
+  // ✅ 写入 SQLite 数据库（修改 1）
+  final programsForDb = <String, List<EpgProgram>>{};
+  for (final entry in programs.entries) {
+    programsForDb[entry.key] = entry.value.map((m) => EpgProgram(
+      title: m['t'] as String,
+      start: DateTime.fromMillisecondsSinceEpoch(m['s'] as int),
+      end: DateTime.fromMillisecondsSinceEpoch(m['e'] as int),
+      desc: m['d'] as String?,
+    )).toList();
+  }
+  await EpgDatabaseService.insertPrograms(programsForDb, icons);
 
   return {
     'programs': programs,
@@ -551,7 +559,13 @@ class EpgParser {
     return _iconMapCache?[channelName];
   }
 
+  // 修改 2：getProgramsForChannel 优先查数据库
   static Future<List<EpgProgram>> getProgramsForChannel(String channelName) async {
+    // ✅ 优先查数据库（新增）
+    final dbPrograms = await EpgDatabaseService.getProgramsForChannel(channelName);
+    if (dbPrograms.isNotEmpty) return dbPrograms;
+
+    // fallback 到原有缓存逻辑
     await _loadEpgData();
     if (_programsCache == null) await _loadCachedEpg();
     if (_programsCache == null || _nameToEpgId == null) return [];
@@ -562,24 +576,39 @@ class EpgParser {
     return programs ?? [];
   }
 
-  /// 获取一组频道的节目（key = 频道显示名称）
+  // 修改 3：getGroupPrograms 优先查数据库
   static Future<Map<String, List<EpgProgram>>> getGroupPrograms(
       List<String> channelNames) async {
+    // ✅ 优先查数据库（新增）
+    final result = <String, List<EpgProgram>>{};
+    for (final name in channelNames) {
+      final dbPrograms = await EpgDatabaseService.getProgramsForChannel(name);
+      if (dbPrograms.isNotEmpty) {
+        result[name] = dbPrograms;
+      }
+    }
+    if (result.isNotEmpty) return result;
+
+    // fallback 到原有缓存逻辑
     await _loadEpgData();
     if (_programsCache == null) await _loadCachedEpg();
     if (_programsCache == null || _nameToEpgId == null) return {};
 
-    final result = <String, List<EpgProgram>>{};
+    final fallback = <String, List<EpgProgram>>{};
     for (final name in channelNames) {
       final epgid = _nameToEpgId![name];
       if (epgid != null && _programsCache!.containsKey(epgid)) {
-        result[name] = _programsCache![epgid]!;
+        fallback[name] = _programsCache![epgid]!;
       }
     }
-    return result;
+    return fallback;
   }
 
-  /// 新增：按频道名列表批量获取节目（UI 层直接调用，无需关心 epgid）
+  /// 获取一组频道的节目（key = 频道显示名称）
+  // 注意：getGroupPrograms 已被上面的实现覆盖，但此方法仍保留用于兼容，实际调用 getGroupPrograms
+  // 但为了避免混淆，可以保留原来的方法名，但内容已替换。
+  // 实际上，上面已经直接修改了 getGroupPrograms 方法，所以这里的注释不再需要。
+  // 下面保留 getProgramsForChannels 作为别名
   static Future<Map<String, List<EpgProgram>>> getProgramsForChannels(
       List<String> channelNames) async {
     return getGroupPrograms(channelNames);
