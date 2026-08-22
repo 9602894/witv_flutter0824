@@ -100,29 +100,18 @@ class EpgParser {
     await init();
   }
 
-  // ========== 解析并保存 ==========
+  // ========== 解析并保存（优化版：单次 Isolate + 直接传字符串） ==========
 
   static Future<void> _parseAndSave(String xmlString) async {
     final stopwatch = Stopwatch()..start();
 
-    final tempDir = await getTemporaryDirectory();
-    final xmlFile = File('${tempDir.path}/epg_${DateTime.now().millisecondsSinceEpoch}.xml');
-    await xmlFile.writeAsString(xmlString, flush: true);
-    LogService.write('EPG: XML临时文件已写入 ${xmlFile.path}');
+    // 直接传 String 给 Isolate（避免临时文件 I/O）
+    final result = await compute(_parseXmlInIsolate, xmlString);
+    LogService.write('EPG: Isolate解析完成 ${result.programs.length}频道 ${result.count}节目');
 
-    final resultPath = await compute(_parseXmlFile, xmlFile.path);
-    await xmlFile.delete();
-    LogService.write('EPG: Isolate解析完成');
-
-    final result = await compute(_deserializeResult, resultPath);
-    await File(resultPath).delete();
-
+    // 清空并写入数据库
     await EpgDatabaseService.clearAll();
-    LogService.write('EPG: 数据库已清空');
-
-    await EpgDatabaseService.batchUpdateDisplayNames(result.displayNames);
-    await EpgDatabaseService.batchUpdateIcons(result.icons);
-    LogService.write('EPG: 频道信息写入完成 ${result.displayNames.length} display, ${result.icons.length} icons');
+    await EpgDatabaseService.batchUpdateChannels(result.displayNames, result.icons);
 
     const batchSize = 500;
     final entries = result.programs.entries.toList();
@@ -135,21 +124,22 @@ class EpgParser {
         await Future.delayed(const Duration(milliseconds: 16));
       }
     }
-    LogService.write('EPG: 节目写入完成 ${result.count} 条');
+    LogService.write('EPG: 数据库写入完成');
 
+    // 保存缓存
     await _saveCacheFile(result.programs, result.icons);
     _memoryCache = result.programs;
     _iconCache = result.icons;
     _cacheTime = DateTime.now();
 
     stopwatch.stop();
-    LogService.write('EPG: 解析完成 ${result.programs.length}频道 ${result.count}节目 ${stopwatch.elapsedMilliseconds}ms');
+    LogService.write('EPG: 总耗时 ${stopwatch.elapsedMilliseconds}ms');
   }
 
-  // ========== Isolate 函数 ==========
+  // ========== Isolate 函数（一次性完成解析+反序列化） ==========
+  // 删除旧方法：_parseXmlFile 和 _deserializeResult
 
-  static String _parseXmlFile(String xmlFilePath) {
-    final xmlString = File(xmlFilePath).readAsStringSync();
+  static _EpgParseResult _parseXmlInIsolate(String xmlString) {
     final document = XmlDocument.parse(xmlString);
 
     final channelIcons = <String, String>{};
@@ -172,7 +162,7 @@ class EpgParser {
       }
     }
 
-    final programJsonMap = <String, List<Map<String, dynamic>>>{};
+    final programMap = <String, List<EpgProgram>>{};
     final programmes = document.findAllElements('programme');
 
     for (final prog in programmes) {
@@ -185,49 +175,19 @@ class EpgParser {
       final stop = _parseXmltvTime(stopStr);
       if (start == null || stop == null) continue;
 
-      programJsonMap.putIfAbsent(channelId, () => []).add({
-        'title': prog.getElement('title')?.value ?? '',
-        'description': prog.getElement('desc')?.value ?? '',
-        'start': start.toIso8601String(),
-        'stop': stop.toIso8601String(),
-      });
+      programMap.putIfAbsent(channelId, () => []).add(EpgProgram(
+        title: prog.getElement('title')?.value ?? '',
+        description: prog.getElement('desc')?.value ?? '',
+        start: start,
+        stop: stop,
+      ));
     }
 
-    for (final entry in programJsonMap.entries) {
-      entry.value.sort((a, b) => DateTime.parse(a['start']!).compareTo(DateTime.parse(b['start']!)));
+    for (final list in programMap.values) {
+      list.sort((a, b) => a.start.compareTo(b.start));
     }
 
-    final resultFile = File('${Directory.systemTemp.path}/epg_result_${DateTime.now().millisecondsSinceEpoch}.json');
-    resultFile.writeAsStringSync(jsonEncode({
-      'programs': programJsonMap,
-      'icons': channelIcons,
-      'displayNames': displayNames,
-      'count': programmes.length,
-    }));
-
-    return resultFile.path;
-  }
-
-  static _EpgParseResult _deserializeResult(String resultPath) {
-    final jsonData = jsonDecode(File(resultPath).readAsStringSync());
-
-    final programJsonMap = (jsonData['programs'] as Map<String, dynamic>).map(
-      (k, v) => MapEntry(k, (v as List).map((e) => e as Map<String, dynamic>).toList()),
-    );
-    final icons = (jsonData['icons'] as Map<String, dynamic>).cast<String, String>();
-    final displayNames = (jsonData['displayNames'] as Map<String, dynamic>?)?.cast<String, String>() ?? {};
-
-    final programs = programJsonMap.map((k, v) => MapEntry(
-      k,
-      v.map((e) => EpgProgram(
-        title: e['title'] as String,
-        description: e['description'] as String,
-        start: DateTime.parse(e['start'] as String),
-        stop: DateTime.parse(e['stop'] as String),
-      )).toList(),
-    ));
-
-    return _EpgParseResult(programs, icons, displayNames, jsonData['count'] as int? ?? 0);
+    return _EpgParseResult(programMap, channelIcons, displayNames, programmes.length);
   }
 
   static DateTime? _parseXmltvTime(String t) {
