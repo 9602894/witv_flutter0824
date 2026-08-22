@@ -284,6 +284,8 @@ class EpgDatabaseService {
     String? epgHash,
   }) async {
     final db = await _database;
+    int totalPrograms = 0; // ✅ 用于外部日志
+
     await db.transaction((txn) async {
       // 只清节目和图标，不清映射表（映射表是预置的）
       await txn.delete(_programsTable);
@@ -340,8 +342,11 @@ class EpgDatabaseService {
         'key': 'program_count',
         'value': cnt.toString()
       });
+
+      totalPrograms = cnt; // 传递计数
     });
-    LogService.write('EpgDatabase: 写入 $cnt 条节目，${icons.length} 个图标');
+
+    LogService.write('EpgDatabase: 写入 $totalPrograms 条节目，${icons.length} 个图标');
   }
 
   /// 清理 N 天前的节目（防止数据库无限膨胀）
