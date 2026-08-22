@@ -106,6 +106,7 @@ class EpgDatabaseService {
       }
       await batch.commit(noResult: true);
     });
+    LogService.write('EPG: 批量更新 display-name 完成，共 ${displayNames.length} 条');
   }
 
   /// 新增：批量更新图标
@@ -126,6 +127,7 @@ class EpgDatabaseService {
       }
       await batch.commit(noResult: true);
     });
+    LogService.write('EPG: 批量更新图标完成，共 ${icons.length} 条');
   }
 
   /// 新增：批量插入节目（使用 batch）
@@ -183,6 +185,7 @@ class EpgDatabaseService {
         }
       }
     });
+    LogService.write('EPG: 插入完成，${programMap.length} 频道, ${channelIcons.length} 图标');
   }
 
   // ============================================================
