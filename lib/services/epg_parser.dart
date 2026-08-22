@@ -1,305 +1,381 @@
-import 'dart:io';
-import 'dart:convert';
 import 'dart:async';
-import 'package:flutter/foundation.dart';
-import 'package:dio/dio.dart';
-import 'package:crypto/crypto.dart';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:math';
+import 'package:flutter/services.dart';
+import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
-import 'package:path/path.dart' as p;
 import 'package:xml/xml.dart';
+import 'package:collection/collection.dart';
 import '../models/epg_program.dart';
 import 'log_service.dart';
-import 'config_service.dart';
 import 'epg_database_service.dart';
 
-// ========== Isolate 纯解析函数（不碰数据库） ==========
-
-Future<Map<String, dynamic>> _parseEpgXmlIsolate(String xmlContent) async {
-  final sw = Stopwatch()..start();
-  final doc = XmlDocument.parse(xmlContent);
-  final programs = <String, List<Map<String, dynamic>>>{};
-  final icons = <String, String>{};
-  final idToName = <String, String>{};
-
-  for (final channel in doc.findAllElements('channel')) {
-    final id = channel.getAttribute('id');
-    if (id == null || id.isEmpty) continue;
-    final dn = channel.findElements('display-name').firstOrNull;
-    if (dn != null) {
-      final name = dn.text.trim();
-      if (name.isNotEmpty) {
-        idToName[id] = name;
-        final icon = channel.findElements('icon').firstOrNull?.getAttribute('src');
-        if (icon != null && icon.isNotEmpty) icons[name] = icon;
-      }
-    }
-  }
-
-  for (final prog in doc.findAllElements('programme')) {
-    final chId = prog.getAttribute('channel');
-    if (chId == null) continue;
-    final chName = idToName[chId];
-    if (chName == null) continue;
-
-    final sStr = prog.getAttribute('start');
-    final eStr = prog.getAttribute('stop');
-    if (sStr == null || eStr == null) continue;
-
-    final start = _parseDateTimeFast(sStr);
-    final end   = _parseDateTimeFast(eStr);
-    if (start == null || end == null) continue;
-
-    final title = prog.findElements('title').firstOrNull?.text ?? '';
-    final desc  = prog.findElements('desc').firstOrNull?.text ?? '';
-
-    programs.putIfAbsent(chName, () => []);
-    programs[chName]!.add({
-      't': title,
-      's': start.millisecondsSinceEpoch,
-      'e': end.millisecondsSinceEpoch,
-      'd': desc.isNotEmpty ? desc : null,
-    });
-  }
-
-  for (final list in programs.values) {
-    list.sort((a, b) => (a['s'] as int).compareTo(b['s'] as int));
-  }
-
-  sw.stop();
-  return {'programs': programs, 'icons': icons, 'time': sw.elapsedMilliseconds};
-}
-
-DateTime? _parseDateTimeFast(String str) {
-  try {
-    if (str.length < 14) return null;
-    final y = int.parse(str.substring(0, 4));
-    final m = int.parse(str.substring(4, 6));
-    final d = int.parse(str.substring(6, 8));
-    final h = int.parse(str.substring(8, 10));
-    final min = int.parse(str.substring(10, 12));
-    final sec = int.parse(str.substring(12, 14));
-    var dt = DateTime.utc(y, m, d, h, min, sec);
-    if (str.length >= 19) {
-      final sign = str[15];
-      final tzH = int.parse(str.substring(16, 18));
-      final tzM = int.parse(str.substring(18, 20));
-      final off = tzH * 60 + tzM;
-      dt = sign == '+' ? dt.subtract(Duration(minutes: off))
-                       : dt.add(Duration(minutes: off));
-    }
-    return dt;
-  } catch (_) {
-    return null;
-  }
-}
-
-// ========== 主类 ==========
+// ============================================================
+// EpgParser —— 酷9方案：精准匹配 + 东八区强制 + 秒级解析
+// ============================================================
 
 class EpgParser {
-  static const String _cacheDirName = 'epgCache';
-  static Directory? _cacheDir;
-  static bool _initialized = false;
+  static const String _epgUrlKey = 'epg_url';
+  static const String _lastEpgUpdateKey = 'last_epg_update';
+  static const String _epgCacheFileName = 'epg_cache.json';
+  static const String _epgDataJsonAsset = 'assets/epg_data.json';
 
-  static final _updateLock = Mutex();
-  static bool _isBackgroundUpdating = false;
+  // ---------- 内存缓存 ----------
+  static Map<String, List<EpgProgram>>? _memoryCache;
+  static Map<String, String>? _iconCache;
+  static DateTime? _cacheTime;
+  static final _cacheLock = Object();
 
-  static Future<void> _initCache() async {
-    if (_cacheDir != null) return;
-    final dir = await getApplicationDocumentsDirectory();
-    _cacheDir = Directory('${dir.path}/$_cacheDirName');
-    if (!await _cacheDir!.exists()) await _cacheDir!.create(recursive: true);
+  // ---------- epg_data.json 映射 ----------
+  // name -> epgid 的精准映射（多对一）
+  static Map<String, String>? _nameToEpgidMap;
+
+  // ---------- 时区：强制东八区 ----------
+  /// 获取当前时间（强制东八区）
+  static DateTime get beijingNow {
+    final now = DateTime.now();
+    // 无论系统时区是什么，都当成东八区处理
+    // 方法：获取 UTC 时间，然后加 8 小时
+    return now.toUtc().add(const Duration(hours: 8));
   }
 
-  static Future<void> initialize() async {
-    if (_initialized) return;
-    await _initCache();
-    await EpgDatabaseService.initMappingsFromAssets();
-    _initialized = true;
-    LogService.write('EpgParser: 初始化完成');
+  /// 将任意时间转为东八区显示
+  static DateTime toBeijing(DateTime dt) {
+    return dt.toUtc().add(const Duration(hours: 8));
   }
 
-  static Future<String?> _getEpgUrl() async {
-    final config = await ConfigService.getConfig();
-    final inner = config['Configuration'] as Map<String, dynamic>?;
-    final raw = inner?['EPG_URLS'] as String?;
-    if (raw == null || raw.isEmpty) return null;
-    return raw.contains(r'$') ? raw.split(r'$')[0].trim() : raw.trim();
+  /// 格式化时间（东八区）
+  static String formatBeijingTime(DateTime dt) {
+    final bj = toBeijing(dt);
+    return '${bj.hour.toString().padLeft(2, '0')}:${bj.minute.toString().padLeft(2, '0')}';
   }
 
-  static String _computeHash(String content) =>
-      md5.convert(utf8.encode(content)).toString();
+  // ============================================================
+  // 加载 epg_data.json（频道名称 → epgid 映射）
+  // ============================================================
 
-  // ========== 更新流程 ==========
+  /// 加载 epg_data.json，建立 name -> epgid 映射
+  static Future<void> _loadEpgNameMap() async {
+    if (_nameToEpgidMap != null) return;
 
-  static Future<bool> checkForUpdate() async {
-    if (_isBackgroundUpdating) return false;
-    return _updateLock.protect(() async {
-      _isBackgroundUpdating = true;
-      try {
-        await initialize();
-        final url = await _getEpgUrl();
-        if (url == null) {
-          LogService.write('EPG URL 未配置，跳过更新');
-          return false;
-        }
-        return await _checkHashUpdate(url);
-      } finally {
-        _isBackgroundUpdating = false;
-      }
-    });
-  }
-
-  static Future<bool> _checkHashUpdate(String epgUrl) async {
     try {
-      final hashUrl = '$epgUrl.hash';
-      final resp = await Dio().get(hashUrl,
-          options: Options(receiveTimeout: const Duration(seconds: 10),
-                           sendTimeout: const Duration(seconds: 5)));
-      final remoteHash = resp.data.toString().trim();
-      if (remoteHash.isEmpty) return false;
+      final jsonString = await rootBundle.loadString(_epgDataJsonAsset);
+      final List<dynamic> data = jsonDecode(jsonString);
 
-      final localHash = await EpgDatabaseService.getCachedHash();
-      if (localHash == remoteHash) {
-        LogService.write('EPG 哈希未变化，跳过');
-        return false;
+      _nameToEpgidMap = {};
+      for (final item in data) {
+        final epgid = item['epgid'] as String;
+        final namesStr = item['name'] as String;
+        // name 字段是逗号分隔的多个频道名
+        final names = namesStr.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty);
+        for (final name in names) {
+          _nameToEpgidMap![name] = epgid;
+        }
       }
-
-      LogService.write('EPG 需要更新，开始下载...');
-      final tempFile = File('${_cacheDir!.path}/epg_temp_${DateTime.now().millisecondsSinceEpoch}.xml');
-      await Dio().download(epgUrl, tempFile.path,
-          options: Options(receiveTimeout: const Duration(seconds: 60),
-                           sendTimeout: const Duration(seconds: 10)));
-
-      final xml = await tempFile.readAsString();
-      if (xml.trim().isEmpty || !xml.trim().startsWith('<')) {
-        await tempFile.delete();
-        return false;
-      }
-
-      final newHash = _computeHash(xml);
-      LogService.write('EPG 下载完成 ${xml.length} bytes，Isolate 解析中...');
-
-      // 1) Isolate 只做 XML 解析
-      final result = await compute(_parseEpgXmlIsolate, xml);
-
-      // 2) 主线程反序列化
-      final programs = <String, List<EpgProgram>>{};
-      for (final e in (result['programs'] as Map<String, dynamic>).entries) {
-        programs[e.key] = (e.value as List).map((m) {
-          final map = m as Map<String, dynamic>;
-          return EpgProgram(
-            title: map['t'] as String,
-            start: DateTime.fromMillisecondsSinceEpoch(map['s'] as int),
-            end: DateTime.fromMillisecondsSinceEpoch(map['e'] as int),
-            desc: map['d'] as String?,
-          );
-        }).toList();
-      }
-      final icons = (result['icons'] as Map<String, dynamic>)
-          .map((k, v) => MapEntry(k, v.toString()));
-
-      // 3) 主线程写入数据库（事务批量插入，性能足够）
-      await EpgDatabaseService.insertPrograms(programs, icons, epgHash: newHash);
-
-      // ✅ 微调：清理三天前的旧节目（避免数据膨胀）
-      await EpgDatabaseService.cleanOldPrograms(3); // 只保留最近 3 天
-
-      // 4) 保留 XML 备份
-      final xmlFile = File('${_cacheDir!.path}/epg_$newHash.xml');
-      await tempFile.copy(xmlFile.path);
-      await tempFile.delete();
-      await _cleanupOldXml(newHash);
-
-      LogService.write('EPG 更新完成: $newHash, ${programs.length} 频道');
-      return true;
-    } catch (e) {
-      LogService.write('EPG 更新失败: $e');
-      return false;
+      LogService.write('EPG名称映射加载完成: ${_nameToEpgidMap!.length} 个名称');
+    } catch (e, stack) {
+      LogService.writeCrashLog('加载epg_data.json失败: $e', stack);
+      _nameToEpgidMap = {};
     }
   }
 
-  static Future<void> _cleanupOldXml(String keepHash) async {
+  /// 根据频道名称获取 epgid（精准匹配）
+  static Future<String?> getEpgidByChannelName(String channelName) async {
+    await _loadEpgNameMap();
+    return _nameToEpgidMap?[channelName];
+  }
+
+  // ============================================================
+  // EPG XML 下载与解析（酷9方案）
+  // ============================================================
+
+  /// 检查并更新 EPG（后台静默）
+  static Future<bool> checkForUpdate() async {
     try {
-      for (final f in await _cacheDir!.list().toList()) {
-        if (f is! File) continue;
-        final name = p.basename(f.path);
-        if (name.startsWith('epg_') && name.endsWith('.xml') && !name.contains(keepHash)) {
-          await f.delete();
+      final settings = await _loadSettings();
+      final url = settings[_epgUrlKey] as String?;
+      if (url == null || url.isEmpty) return false;
+
+      final lastUpdate = settings[_lastEpgUpdateKey] as int?;
+      final lastDate = lastUpdate != null
+          ? DateTime.fromMillisecondsSinceEpoch(lastUpdate)
+          : DateTime(2000);
+
+      // 每6小时检查一次
+      if (DateTime.now().difference(lastDate) < const Duration(hours: 6)) {
+        return false;
+      }
+
+      LogService.write('EPG: 检查更新 $url');
+      final response = await http.get(Uri.parse(url)).timeout(const Duration(seconds: 30));
+
+      if (response.statusCode == 200) {
+        final xmlString = utf8.decode(response.bodyBytes);
+        await _parseAndCache(xmlString, url);
+        await _saveSettings({
+          ...settings,
+          _lastEpgUpdateKey: DateTime.now().millisecondsSinceEpoch,
+        });
+        return true;
+      }
+    } catch (e) {
+      LogService.write('EPG更新检查失败: $e');
+    }
+    return false;
+  }
+
+  /// 强制刷新 EPG（用户手动触发）
+  static Future<void> forceRefresh() async {
+    try {
+      final settings = await _loadSettings();
+      final url = settings[_epgUrlKey] as String?;
+      if (url == null || url.isEmpty) throw Exception('未配置EPG地址');
+
+      LogService.write('EPG: 强制刷新 $url');
+      final response = await http.get(Uri.parse(url)).timeout(const Duration(seconds: 60));
+
+      if (response.statusCode == 200) {
+        final xmlString = utf8.decode(response.bodyBytes);
+        await _parseAndCache(xmlString, url);
+        await _saveSettings({
+          ...settings,
+          _lastEpgUpdateKey: DateTime.now().millisecondsSinceEpoch,
+        });
+        LogService.write('EPG: 强制刷新成功');
+      } else {
+        throw Exception('HTTP ${response.statusCode}');
+      }
+    } catch (e, stack) {
+      LogService.writeCrashLog('EPG强制刷新失败: $e', stack);
+      rethrow;
+    }
+  }
+
+  // ============================================================
+  // XML 解析（秒级：流式解析 + 批量入库）
+  // ============================================================
+
+  static Future<void> _parseAndCache(String xmlString, String sourceUrl) async {
+    final stopwatch = Stopwatch()..start();
+
+    // 1. 清空旧数据
+    await EpgDatabaseService.clearAll();
+
+    // 2. 解析 XML
+    final document = XmlDocument.parse(xmlString);
+
+    // 3. 先解析 channel 元素，建立 display-name -> channel id 映射
+    // 同时收集 icon
+    final displayNameToChannelId = <String, String>{};
+    final channelIcons = <String, String>{};
+
+    final channels = document.findAllElements('channel');
+    for (final channel in channels) {
+      final id = channel.getAttribute('id');
+      if (id == null) continue;
+
+      // 获取 display-name（可能有多个，取第一个匹配的）
+      final displayNames = channel.findAllElements('display-name');
+      for (final dn in displayNames) {
+        final name = dn.value?.trim() ?? '';
+        if (name.isNotEmpty) {
+          displayNameToChannelId[name] = id;
         }
+      }
+
+      // 获取 icon
+      final iconElem = channel.getElement('icon');
+      if (iconElem != null) {
+        final src = iconElem.getAttribute('src');
+        if (src != null && src.isNotEmpty) {
+          channelIcons[id] = src;
+        }
+      }
+    }
+
+    // 4. 解析 programme，按 channel id 分组
+    final programMap = <String, List<EpgProgram>>{};
+    final programmes = document.findAllElements('programme');
+
+    for (final prog in programmes) {
+      final channelId = prog.getAttribute('channel');
+      final startStr = prog.getAttribute('start');
+      final stopStr = prog.getAttribute('stop');
+      if (channelId == null || startStr == null || stopStr == null) continue;
+
+      final start = _parseXmltvTime(startStr);
+      final stop = _parseXmltvTime(stopStr);
+      if (start == null || stop == null) continue;
+
+      final title = prog.getElement('title')?.value ?? '';
+      final desc = prog.getElement('desc')?.value ?? '';
+
+      final program = EpgProgram(
+        title: title,
+        description: desc,
+        start: start,
+        stop: stop,
+      );
+
+      programMap.putIfAbsent(channelId, () => []).add(program);
+    }
+
+    // 5. 对每个 channel 的节目按时间排序
+    for (final entry in programMap.entries) {
+      entry.value.sort((a, b) => a.start.compareTo(b.start));
+    }
+
+    // 6. 批量写入数据库（一次性事务）
+    await EpgDatabaseService.insertPrograms(programMap, channelIcons);
+
+    // 7. 更新内存缓存
+    _memoryCache = programMap;
+    _iconCache = channelIcons;
+    _cacheTime = DateTime.now();
+
+    stopwatch.stop();
+    LogService.write('EPG解析完成: ${programMap.length} 频道, ${programmes.length} 节目, 耗时 ${stopwatch.elapsedMilliseconds}ms');
+  }
+
+  /// 解析 XMLTV 时间格式（多种格式兼容）
+  static DateTime? _parseXmltvTime(String t) {
+    try {
+      // 格式1: 20240115120000 +0800
+      // 格式2: 20240115120000
+      String s = t.trim();
+
+      // 去掉时区信息（因为我们强制东八区）
+      final tzIdx = s.indexOfRegExp(RegExp(r'[+-]\\d{4}'));
+      if (tzIdx > 0) {
+        s = s.substring(0, tzIdx).trim();
+      }
+
+      if (s.length >= 14) {
+        final year = int.parse(s.substring(0, 4));
+        final month = int.parse(s.substring(4, 6));
+        final day = int.parse(s.substring(6, 8));
+        final hour = int.parse(s.substring(8, 10));
+        final minute = int.parse(s.substring(10, 12));
+        final second = int.parse(s.substring(12, 14));
+        // XMLTV 时间通常是本地时间或带时区的，我们统一转为 UTC 再处理
+        return DateTime.utc(year, month, day, hour, minute, second);
       }
     } catch (_) {}
+    return null;
   }
 
-  // ========== 对外 API（全部直查数据库） ==========
+  // ============================================================
+  // 查询接口（核心：三层精准匹配）
+  // ============================================================
 
-  static Future<List<EpgProgram>> getProgramsForChannel(String channelName) async {
-    await initialize();
-    return EpgDatabaseService.getProgramsForChannel(channelName);
-  }
+  /// 获取频道节目单（通过频道名称 → epgid → channel id → programmes）
+  static Future<List<EpgProgram>> getProgramsByChannelName(String channelName) async {
+    if (channelName.isEmpty) return [];
 
-  static Future<Map<String, List<EpgProgram>>> getProgramsForChannels(
-      List<String> names) async {
-    await initialize();
-    return EpgDatabaseService.getProgramsForChannels(names);
-  }
-
-  static Future<EpgProgram?> getCurrentProgram(String channelName, DateTime nowUtc) async {
-    await initialize();
-    return EpgDatabaseService.getCurrentProgram(channelName, nowUtc);
-  }
-
-  static Future<EpgProgram?> getNextProgram(String channelName, DateTime nowUtc) async {
-    await initialize();
-    return EpgDatabaseService.getNextProgram(channelName, nowUtc);
-  }
-
-  static Future<Map<String, EpgProgram?>> getCurrentProgramsForChannels(
-      List<String> names, DateTime nowUtc) async {
-    await initialize();
-    return EpgDatabaseService.getCurrentProgramsForChannels(names, nowUtc);
-  }
-
-  static Future<String?> getChannelIconUrl(String channelName) async {
-    await initialize();
-    return EpgDatabaseService.getChannelIcon(channelName);
-  }
-
-  static Future<void> preloadAll() async => initialize();
-
-  static Future<void> clearCache() async {
-    await _initCache();
-    if (await _cacheDir!.exists()) {
-      await _cacheDir!.delete(recursive: true);
-      await _cacheDir!.create();
+    // 第一层：频道名称 → epgid
+    final epgid = await getEpgidByChannelName(channelName);
+    if (epgid == null) {
+      LogService.write('EPG: 未找到频道映射: $channelName');
+      return [];
     }
-    await EpgDatabaseService.clearAll();
-    _initialized = false;
-    LogService.write('EPG 缓存已清空');
+
+    // 第二层：epgid → channel id（通过 display-name 匹配）
+    final channelId = await EpgDatabaseService.findChannelIdByDisplayName(epgid);
+    if (channelId == null) {
+      LogService.write('EPG: 未找到 channel id: epgid=$epgid');
+      return [];
+    }
+
+    // 第三层：channel id → programmes
+    final programs = await EpgDatabaseService.getProgramsByChannelId(channelId);
+    return programs;
   }
 
-  static Future<String?> getCachedHash() async {
-    await initialize();
-    return EpgDatabaseService.getCachedHash();
+  /// 获取当前节目（东八区时间）
+  static Future<EpgProgram?> getCurrentProgram(String channelName) async {
+    final programs = await getProgramsByChannelName(channelName);
+    if (programs.isEmpty) return null;
+
+    final now = beijingNow;
+    return programs.firstWhereOrNull((p) => p.start.isBefore(now) && p.stop.isAfter(now));
   }
 
-  /// 获取全部 name -> epgid 映射（供外部使用）
-  static Future<Map<String, String>> getNameToEpgId() async {
-    await initialize();
-    return EpgDatabaseService.getAllMappings();
+  /// 获取下一个节目（东八区时间）
+  static Future<EpgProgram?> getNextProgram(String channelName) async {
+    final programs = await getProgramsByChannelName(channelName);
+    if (programs.isEmpty) return null;
+
+    final now = beijingNow;
+    return programs.firstWhereOrNull((p) => p.start.isAfter(now));
+  }
+
+  /// 获取频道图标
+  static Future<String?> getChannelIcon(String channelName) async {
+    final epgid = await getEpgidByChannelName(channelName);
+    if (epgid == null) return null;
+    final channelId = await EpgDatabaseService.findChannelIdByDisplayName(epgid);
+    if (channelId == null) return null;
+    return EpgDatabaseService.getChannelIcon(channelId);
+  }
+
+  // ============================================================
+  // 缓存管理
+  // ============================================================
+
+  /// 预加载到内存（启动时调用）
+  static Future<void> warmUpCache() async {
+    try {
+      final isDbEmpty = await EpgDatabaseService.isEmpty();
+      if (isDbEmpty) {
+        // 尝试从 JSON 缓存文件加载
+        final dir = await getApplicationDocumentsDirectory();
+        final file = File('${dir.path}/$_epgCacheFileName');
+        if (await file.exists()) {
+          final jsonString = await file.readAsString();
+          final jsonData = jsonDecode(jsonString);
+          final programs = (jsonData['programs'] as Map<String, dynamic>).map(
+            (k, v) => MapEntry(k, (v as List).map((e) => EpgProgram.fromJson(e)).toList()),
+          );
+          final icons = (jsonData['icons'] as Map<String, dynamic>).cast<String, String>();
+          await EpgDatabaseService.insertPrograms(programs, icons);
+          LogService.write('EPG: 从 JSON 缓存预热数据库');
+        }
+      }
+
+      // 加载名称映射
+      await _loadEpgNameMap();
+
+      LogService.write('EPG: 缓存预热完成');
+    } catch (e) {
+      LogService.write('EPG缓存预热失败: $e');
+    }
+  }
+
+  // ---------- 设置持久化 ----------
+  static Future<Map<String, dynamic>> _loadSettings() async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/epg_settings.json');
+      if (await file.exists()) {
+        final content = await file.readAsString();
+        return jsonDecode(content) as Map<String, dynamic>;
+      }
+    } catch (_) {}
+    return {};
+  }
+
+  static Future<void> _saveSettings(Map<String, dynamic> settings) async {
+    final dir = await getApplicationDocumentsDirectory();
+    final file = File('${dir.path}/epg_settings.json');
+    await file.writeAsString(jsonEncode(settings));
   }
 }
 
-class Mutex {
-  Future<void>? _last;
-  Future<T> protect<T>(Future<T> Function() task) async {
-    final prev = _last;
-    final c = Completer<void>();
-    _last = c.future;
-    try {
-      if (prev != null) await prev;
-      return await task();
-    } finally {
-      c.complete();
-    }
+// ---------- String 扩展 ----------
+extension StringExt on String {
+  int indexOfRegExp(RegExp regExp) {
+    final match = regExp.firstMatch(this);
+    return match?.start ?? -1;
   }
 }
