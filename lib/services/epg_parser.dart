@@ -481,32 +481,20 @@ class EpgParser {
   }
 
   // ============================================================
-  // 缓存管理
+  // 缓存管理（FIX：移除自动恢复旧缓存的逻辑）
   // ============================================================
 
   static Future<void> warmUpCache() async {
     try {
-      final isDbEmpty = await EpgDatabaseService.isEmpty();
-      if (isDbEmpty) {
-        final dir = await getApplicationDocumentsDirectory();
-        final file = File('${dir.path}/$_epgCacheFileName');
-        if (await file.exists()) {
-          final jsonString = await file.readAsString();
-          final jsonData = jsonDecode(jsonString);
-          final programs = (jsonData['programs'] as Map<String, dynamic>).map(
-            (k, v) => MapEntry(k, (v as List).map((e) => EpgProgram.fromJson(e)).toList()),
-          );
-          final icons = (jsonData['icons'] as Map<String, dynamic>).cast<String, String>();
-          await EpgDatabaseService.insertPrograms(programs, icons);
-          LogService.write('EPG: 从 JSON 缓存预热数据库');
-        }
-      }
-
+      // FIX: 移除自动从旧缓存文件恢复的逻辑
+      // 之前的问题：旧缓存恢复后数据库有"假数据"，isDbEmpty()=false，
+      // forceRefresh() 永不执行，EPG 永远加载不了
+      // 缓存文件仍由 _parseAndCache() 保存，但启动时不自动恢复
+      // 只加载名称映射
       await _loadEpgNameMap();
-
       LogService.write('EPG: 缓存预热完成');
-    } catch (e) {
-      LogService.write('EPG缓存预热失败: $e');
+    } catch (e, stack) {
+      LogService.writeCrashLog('EPG缓存预热失败: $e', stack);
     }
   }
 
