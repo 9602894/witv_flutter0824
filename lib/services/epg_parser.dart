@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'package:flutter/services.dart';
-import 'package:flutter/foundation.dart'; // ⬅️ 新增，用于 compute
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:xml/xml.dart';
@@ -44,7 +44,7 @@ class EpgParser {
   }
 
   // ============================================================
-  // 加载 epg_data.json（增加日志）
+  // 加载 epg_data.json
   // ============================================================
 
   static Future<void> _loadEpgNameMap() async {
@@ -144,20 +144,34 @@ class EpgParser {
   }
 
   // ============================================================
-  // XML 解析（使用 Isolate 避免阻塞 UI）
+  // XML 解析（避免主线程序列化大字符串，使用文件传递）
   // ============================================================
 
   static Future<void> _parseAndCache(String xmlString, String sourceUrl) async {
     final stopwatch = Stopwatch()..start();
 
-    LogService.write('EPG: 开始在Isolate中解析XML，长度=${xmlString.length}');
-    final result = await compute(_parseXmlInIsolate, xmlString);
-    LogService.write('EPG: Isolate解析完成，开始写入数据库');
+    // 1. 先把 XML 写入临时文件（避免主线程序列化大字符串到 Isolate）
+    final tempDir = await getTemporaryDirectory();
+    final xmlFile = File('${tempDir.path}/epg_temp_${DateTime.now().millisecondsSinceEpoch}.xml');
+    await xmlFile.writeAsString(xmlString, flush: true);
+    LogService.write('EPG: XML已写入临时文件 ${xmlFile.path}，大小=${xmlString.length}');
 
-    final programJsonMap = (result['programs'] as Map<String, dynamic>).map(
+    // 2. Isolate 只传文件路径，解析后结果也写文件
+    final resultPath = await compute(_parseXmlFile, xmlFile.path);
+    LogService.write('EPG: Isolate解析完成，结果文件=$resultPath');
+
+    // 3. 删除 XML 临时文件
+    await xmlFile.delete();
+
+    // 4. 从结果文件读取（避免主线程反序列化大 Map）
+    final resultFile = File(resultPath);
+    final jsonData = jsonDecode(await resultFile.readAsString());
+    await resultFile.delete();
+
+    final programJsonMap = (jsonData['programs'] as Map<String, dynamic>).map(
       (k, v) => MapEntry(k, (v as List).map((e) => e as Map<String, dynamic>).toList()),
     );
-    final channelIcons = (result['icons'] as Map<String, dynamic>).cast<String, String>();
+    final channelIcons = (jsonData['icons'] as Map<String, dynamic>).cast<String, String>();
 
     final programMap = programJsonMap.map((k, v) => MapEntry(
       k,
@@ -169,35 +183,43 @@ class EpgParser {
       )).toList(),
     ));
 
+    // 5. 分批写入数据库，避免阻塞
+    LogService.write('EPG: 开始分批写入数据库，共 ${programMap.length} 个频道');
     await EpgDatabaseService.clearAll();
-    await EpgDatabaseService.insertPrograms(programMap, channelIcons);
+    const batchSize = 1000;
+    final entries = programMap.entries.toList();
+    for (var i = 0; i < entries.length; i += batchSize) {
+      final batch = Map<String, List<EpgProgram>>.fromEntries(
+        entries.skip(i).take(batchSize),
+      );
+      await EpgDatabaseService.insertPrograms(batch, channelIcons);
+      // 每 3 批让出一次时间片，保证播放不卡
+      if (i > 0 && i % 3000 == 0) {
+        await Future.delayed(const Duration(milliseconds: 16));
+        LogService.write('EPG: 已写入 $i/${entries.length} 个频道');
+      }
+    }
 
     _memoryCache = programMap;
     _iconCache = channelIcons;
     _cacheTime = DateTime.now();
 
     stopwatch.stop();
-    LogService.write('EPG解析完成: ${programMap.length} 频道, ${result['count']} 节目, 耗时 ${stopwatch.elapsedMilliseconds}ms');
+    LogService.write('EPG解析完成: ${programMap.length} 频道, ${jsonData['count']} 节目, 耗时 ${stopwatch.elapsedMilliseconds}ms');
   }
 
-  /// 在 Isolate 中解析 XML，避免阻塞 UI
-  static Map<String, dynamic> _parseXmlInIsolate(String xmlString) {
+  /// 在 Isolate 中解析 XML 文件，结果写入临时 JSON 文件，返回文件路径
+  static String _parseXmlFile(String xmlFilePath) {
+    final xmlString = File(xmlFilePath).readAsStringSync();
     final document = XmlDocument.parse(xmlString);
 
     // 1. 解析 channel
-    final displayNameToChannelId = <String, String>{};
     final channelIcons = <String, String>{};
 
     final channels = document.findAllElements('channel');
     for (final channel in channels) {
       final id = channel.getAttribute('id');
       if (id == null) continue;
-
-      final displayNames = channel.findAllElements('display-name');
-      for (final dn in displayNames) {
-        final name = dn.value?.trim() ?? '';
-        if (name.isNotEmpty) displayNameToChannelId[name] = id;
-      }
 
       final iconElem = channel.getElement('icon');
       if (iconElem != null) {
@@ -231,16 +253,20 @@ class EpgParser {
       });
     }
 
-    // 3. 按时间排序
+    // 3. 排序
     for (final entry in programJsonMap.entries) {
       entry.value.sort((a, b) => DateTime.parse(a['start']!).compareTo(DateTime.parse(b['start']!)));
     }
 
-    return {
+    // 4. 写入结果文件
+    final resultFile = File('${Directory.systemTemp.path}/epg_result_${DateTime.now().millisecondsSinceEpoch}.json');
+    resultFile.writeAsStringSync(jsonEncode({
       'programs': programJsonMap,
       'icons': channelIcons,
       'count': programmes.length,
-    };
+    }));
+
+    return resultFile.path;
   }
 
   static DateTime? _parseXmltvTime(String t) {
@@ -266,26 +292,31 @@ class EpgParser {
   }
 
   // ============================================================
-  // 查询接口（三层精准匹配）
+  // 查询接口（三层精准匹配 + 模糊匹配兜底）
   // ============================================================
 
   static Future<List<EpgProgram>> getProgramsByChannelName(String channelName) async {
     if (channelName.isEmpty) return [];
 
+    // 第一层：精准匹配（name -> epgid -> channel id）
     final epgid = await getEpgidByChannelName(channelName);
-    if (epgid == null) {
-      LogService.write('EPG: 未找到频道映射: $channelName');
-      return [];
+    if (epgid != null) {
+      final channelId = await EpgDatabaseService.findChannelIdByDisplayName(epgid);
+      if (channelId != null) {
+        LogService.write('EPG: 精准匹配 $channelName -> $epgid -> $channelId');
+        return await EpgDatabaseService.getProgramsByChannelId(channelId);
+      }
     }
 
-    final channelId = await EpgDatabaseService.findChannelIdByDisplayName(epgid);
-    if (channelId == null) {
-      LogService.write('EPG: 未找到 channel id: epgid=$epgid');
-      return [];
+    // 第二层：模糊匹配（直接用频道名匹配 EPG 里的 display-name）
+    final channelId = await EpgDatabaseService.findChannelIdByDisplayName(channelName);
+    if (channelId != null) {
+      LogService.write('EPG: 模糊匹配 $channelName -> $channelId');
+      return await EpgDatabaseService.getProgramsByChannelId(channelId);
     }
 
-    final programs = await EpgDatabaseService.getProgramsByChannelId(channelId);
-    return programs;
+    LogService.write('EPG: 未找到频道映射: $channelName');
+    return [];
   }
 
   static Future<EpgProgram?> getCurrentProgram(String channelName) async {
@@ -316,12 +347,10 @@ class EpgParser {
   // 新增方法（兼容旧调用 & LogoService）
   // ============================================================
 
-  /// 获取频道图标 URL（兼容旧调用）
   static Future<String?> getChannelIconUrl(String channelName) async {
     return getChannelIcon(channelName);
   }
 
-  /// 获取完整 name → epgid 映射（供 LogoService 使用）
   static Future<Map<String, String>> getNameToEpgId() async {
     await _loadEpgNameMap();
     return _nameToEpgidMap ?? {};
