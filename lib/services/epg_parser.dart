@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
 import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:xml/xml.dart';
@@ -20,20 +21,14 @@ class _EpgParseResult {
   _EpgParseResult(this.programs, this.icons, this.displayNames, this.count);
 }
 
-class _CacheDecodeResult {
-  final Map<String, List<EpgProgram>> programs;
-  final Map<String, String> icons;
-  _CacheDecodeResult(this.programs, this.icons);
-}
-
-/// EPG 服务 - 零阻塞优化版 v2
+/// EPG 服务 - 零阻塞终极版 v3
 ///
 /// 核心设计：
 /// 1. 内存优先：所有查询先走 _memoryCache，O(1) 命中，零延迟
 /// 2. 启动秒开：init() 先恢复 JSON 缓存到内存，再后台检查更新
-/// 3. Isolate 流式解析：用 Isolate.spawn + SendPort 分片传输，主线程逐批消化
-/// 4. 持久化后台化：SQLite / JSON 文件写入全部抛到后台，不阻塞主线程
-/// 5. 播放器零感知：EPG 任何操作都不影响视频解码和渲染
+/// 3. 三阶 Isolate：解析 XML → JSON String → 对象构建，主线程只做赋值
+/// 4. 播放器零感知：EPG 任何操作都不影响视频解码和渲染
+/// 5. ValueNotifier 通知：UI 层用 addListener/removeListener，无需 StreamSubscription
 class EpgParser {
   static const String _epgUrlKey = 'epg_url';
   static const String _lastEpgUpdateKey = 'last_epg_update';
@@ -50,14 +45,11 @@ class EpgParser {
   static bool _isBackgroundSaving = false;
   static bool _isDownloading = false;
 
-  // ========== UI 更新通知流 ==========
-  static final _epgUpdateController = StreamController<void>.broadcast();
-  static Stream<void> get onEpgUpdated => _epgUpdateController.stream;
+  // ========== UI 更新通知（ValueNotifier，无需 import dart:async）==========
+  static final ValueNotifier<int> epgUpdateCounter = ValueNotifier(0);
 
   static void _notifyUpdate() {
-    if (!_epgUpdateController.isClosed) {
-      _epgUpdateController.add(null);
-    }
+    epgUpdateCounter.value++;
   }
 
   // ========== 时区工具 ==========
@@ -78,16 +70,15 @@ class EpgParser {
   static Future<void> init() async {
     LogService.write('EPG: ========== init 开始 ==========');
     try {
-      // 1. 先加载名称映射（assets 读取，<10ms）
       await _loadEpgNameMap();
       LogService.write('EPG: 名称映射 ${_nameToEpgidMap?.length ?? 0} 条');
 
-      // 2. 【关键】先恢复内存缓存，UI 立刻有 EPG 数据可用
+      // 【关键】先恢复内存缓存，UI 立刻有 EPG 数据可用
       await _loadCacheFromFile();
       final memCount = _memoryCache?.length ?? 0;
       LogService.write('EPG: 内存缓存恢复 $memCount 频道，UI 可立即查询');
 
-      // 3. 【关键】后台检查更新，不 await，不阻塞播放
+      // 【关键】后台检查更新，不 await，不阻塞播放
       _checkAndUpdateInBackground();
 
       LogService.write('EPG: ========== init 完成（内存就绪，后台更新中） ==========');
@@ -151,196 +142,127 @@ class EpgParser {
     _checkAndUpdateInBackground();
   }
 
-  // ========== 解析并保存（Isolate 流式传输版，主线程零阻塞）==========
+  // ========== 解析并保存（三阶 Isolate，主线程零阻塞）==========
   static Future<void> _parseAndSave(String xmlString) async {
     final stopwatch = Stopwatch()..start();
 
-    final receivePort = ReceivePort();
-    final isolate = await Isolate.spawn(_parseXmlIsolateEntry, [receivePort.sendPort, xmlString]);
+    // 【第一阶段】Isolate 里解析 XML + 序列化成 JSON String
+    // 避免主线程反序列化大量自定义对象
+    final jsonString = await Isolate.run(() => _parseXmlToJsonString(xmlString));
+    LogService.write('EPG: Isolate XML解析+JSON序列化完成');
 
-    final completer = Completer<void>();
-    var totalCount = 0;
-    Map<String, String>? icons;
-    Map<String, String>? displayNames;
+    // 【第二阶段】Isolate 里 jsonDecode + 构建 EpgProgram 对象
+    // 主线程只做最终赋值，零阻塞
+    final result = await Isolate.run(() => _buildFromJsonString(jsonString));
+    LogService.write('EPG: Isolate 对象构建完成 ${result.programs.length}频道 ${result.count}节目');
 
-    // 初始化内存缓存
-    _memoryCache = {};
-
-    receivePort.listen((msg) async {
-      if (msg is! Map) return;
-
-      final type = msg['type'] as String?;
-
-      switch (type) {
-        case 'meta':
-          icons = (msg['icons'] as Map?)?.cast<String, String>();
-          displayNames = (msg['displayNames'] as Map?)?.cast<String, String>();
-          _iconCache = icons;
-          LogService.write('EPG: Isolate 发送元数据 ${icons?.length} 图标');
-          break;
-
-        case 'batch':
-          final batch = (msg['data'] as Map).cast<String, List<dynamic>>();
-          final count = msg['count'] as int;
-
-          // 【关键】分批处理，每 100 个频道 yield 一次，确保不卡播放
-          final entries = batch.entries.toList();
-          for (var i = 0; i < entries.length; i += 100) {
-            final chunk = entries.skip(i).take(100);
-            for (final entry in chunk) {
-              final programs = entry.value.map((m) {
-                final map = m as Map;
-                return EpgProgram(
-                  title: map['t'] as String? ?? '',
-                  description: map['d'] as String? ?? '',
-                  start: DateTime.fromMillisecondsSinceEpoch(map['s'] as int),
-                  stop: DateTime.fromMillisecondsSinceEpoch(map['e'] as int),
-                );
-              }).toList();
-              _memoryCache![entry.key] = programs;
-            }
-            // 每 100 个频道让出时间片
-            if (i + 100 < entries.length) {
-              await Future.delayed(Duration.zero);
-            }
-          }
-
-          totalCount = count;
-          LogService.write('EPG: 已接收 $totalCount 条节目');
-          break;
-
-        case 'done':
-          totalCount = msg['count'] as int;
-
-          // 排序
-          for (final list in _memoryCache!.values) {
-            list.sort((a, b) => a.start.compareTo(b.start));
-          }
-
-          _cacheTime = DateTime.now();
-          _notifyUpdate(); // 【关键】通知 UI 刷新
-          LogService.write('EPG: 内存缓存已更新 ${_memoryCache!.length} 频道 $totalCount 节目');
-
-          completer.complete();
-          receivePort.close();
-          break;
-
-        case 'error':
-          completer.completeError(msg['error'] as String);
-          receivePort.close();
-          break;
-      }
-    });
-
-    await completer;
-    isolate.kill(priority: Isolate.immediate);
+    // 【第三阶段】主线程只做内存赋值（O(1)）
+    _memoryCache = result.programs;
+    _iconCache = result.icons;
+    _cacheTime = DateTime.now();
+    _notifyUpdate();
+    LogService.write('EPG: 内存缓存已热更新');
 
     // 后台持久化（不阻塞）
-    if (_memoryCache != null && icons != null) {
-      _saveCacheFile(_memoryCache!, icons!).catchError((e) {
-        LogService.write('EPG: 缓存文件保存失败: $e');
-      });
-      _saveToDatabaseInBackground(_EpgParseResult(
-        _memoryCache!, icons!, displayNames ?? {}, totalCount,
-      )).catchError((e) {
-        LogService.write('EPG: 数据库后台写入失败: $e');
-      });
-    }
+    _saveCacheFile(result.programs, result.icons).catchError((e) {
+      LogService.write('EPG: 缓存文件保存失败: $e');
+    });
+    _saveToDatabaseInBackground(result).catchError((e) {
+      LogService.write('EPG: 数据库后台写入失败: $e');
+    });
 
     stopwatch.stop();
-    LogService.write('EPG: 解析+内存更新耗时 ${stopwatch.elapsedMilliseconds}ms（播放器无感知）');
+    LogService.write('EPG: 总耗时 ${stopwatch.elapsedMilliseconds}ms（播放器无感知）');
   }
 
-  // ========== Isolate 入口（分片传输，避免一次性大数据反序列化）==========
+  // ========== Isolate 函数 1：解析 XML → JSON String ==========
   @pragma('vm:entry-point')
-  static void _parseXmlIsolateEntry(List<dynamic> args) {
-    final sendPort = args[0] as SendPort;
-    final xmlString = args[1] as String;
+  static String _parseXmlToJsonString(String xmlString) {
+    final document = XmlDocument.parse(xmlString);
 
-    try {
-      final document = XmlDocument.parse(xmlString);
+    final channelIcons = <String, String>{};
+    final displayNames = <String, String>{};
 
-      final channelIcons = <String, String>{};
-      final displayNames = <String, String>{};
+    for (final channel in document.findAllElements('channel')) {
+      final id = channel.getAttribute('id');
+      if (id == null) continue;
 
-      for (final channel in document.findAllElements('channel')) {
-        final id = channel.getAttribute('id');
-        if (id == null) continue;
-
-        final iconElem = channel.getElement('icon');
-        if (iconElem != null) {
-          final src = iconElem.getAttribute('src');
-          if (src != null && src.isNotEmpty) channelIcons[id] = src;
-        }
-
-        final dnElem = channel.getElement('display-name');
-        if (dnElem != null) {
-          final dn = dnElem.value?.trim();
-          if (dn != null && dn.isNotEmpty) displayNames[id] = dn;
-        }
+      final iconElem = channel.getElement('icon');
+      if (iconElem != null) {
+        final src = iconElem.getAttribute('src');
+        if (src != null && src.isNotEmpty) channelIcons[id] = src;
       }
 
-      // 先发送元数据
-      sendPort.send({
-        'type': 'meta',
-        'icons': channelIcons,
-        'displayNames': displayNames,
-      });
-
-      // 分批解析 programme，每 1万条发送一次
-      final programMap = <String, List<Map<String, dynamic>>>{};
-      final programmes = document.findAllElements('programme');
-      var totalCount = 0;
-      const batchSize = 10000;
-
-      for (final prog in programmes) {
-        final channelId = prog.getAttribute('channel');
-        final startStr = prog.getAttribute('start');
-        final stopStr = prog.getAttribute('stop');
-        if (channelId == null || startStr == null || stopStr == null) continue;
-
-        final start = _parseXmltvTime(startStr);
-        final stop = _parseXmltvTime(stopStr);
-        if (start == null || stop == null) continue;
-
-        programMap.putIfAbsent(channelId, () => []).add({
-          't': prog.getElement('title')?.value ?? '',
-          'd': prog.getElement('desc')?.value ?? '',
-          's': start.millisecondsSinceEpoch,
-          'e': stop.millisecondsSinceEpoch,
-        });
-
-        totalCount++;
-
-        if (totalCount % batchSize == 0) {
-          sendPort.send({
-            'type': 'batch',
-            'data': Map<String, List<Map<String, dynamic>>>.from(programMap),
-            'count': totalCount,
-          });
-          programMap.clear();
-        }
+      final dnElem = channel.getElement('display-name');
+      if (dnElem != null) {
+        final dn = dnElem.value?.trim();
+        if (dn != null && dn.isNotEmpty) displayNames[id] = dn;
       }
-
-      // 发送剩余数据
-      if (programMap.isNotEmpty) {
-        sendPort.send({
-          'type': 'batch',
-          'data': programMap,
-          'count': totalCount,
-        });
-      }
-
-      sendPort.send({
-        'type': 'done',
-        'count': totalCount,
-      });
-    } catch (e) {
-      sendPort.send({
-        'type': 'error',
-        'error': e.toString(),
-      });
     }
+
+    final programMap = <String, List<Map<String, dynamic>>>{};
+    final programmes = document.findAllElements('programme');
+    var count = 0;
+
+    for (final prog in programmes) {
+      final channelId = prog.getAttribute('channel');
+      final startStr = prog.getAttribute('start');
+      final stopStr = prog.getAttribute('stop');
+      if (channelId == null || startStr == null || stopStr == null) continue;
+
+      final start = _parseXmltvTime(startStr);
+      final stop = _parseXmltvTime(stopStr);
+      if (start == null || stop == null) continue;
+
+      programMap.putIfAbsent(channelId, () => []).add({
+        't': prog.getElement('title')?.value ?? '',
+        'd': prog.getElement('desc')?.value ?? '',
+        's': start.millisecondsSinceEpoch,
+        'e': stop.millisecondsSinceEpoch,
+      });
+      count++;
+    }
+
+    // 排序
+    for (final list in programMap.values) {
+      list.sort((a, b) => (a['s'] as int).compareTo(b['s'] as int));
+    }
+
+    return jsonEncode({
+      'programs': programMap,
+      'icons': channelIcons,
+      'displayNames': displayNames,
+      'count': count,
+    });
+  }
+
+  // ========== Isolate 函数 2：JSON String → EpgProgram 对象 ==========
+  @pragma('vm:entry-point')
+  static _EpgParseResult _buildFromJsonString(String jsonString) {
+    final decoded = jsonDecode(jsonString) as Map<String, dynamic>;
+
+    final rawPrograms = decoded['programs'] as Map<String, dynamic>;
+    final programs = <String, List<EpgProgram>>{};
+    var count = 0;
+
+    for (final entry in rawPrograms.entries) {
+      final list = (entry.value as List).map((m) {
+        final map = m as Map<String, dynamic>;
+        return EpgProgram(
+          title: map['t'] as String? ?? '',
+          description: map['d'] as String? ?? '',
+          start: DateTime.fromMillisecondsSinceEpoch(map['s'] as int),
+          stop: DateTime.fromMillisecondsSinceEpoch(map['e'] as int),
+        );
+      }).toList();
+      programs[entry.key] = list;
+      count += list.length;
+    }
+
+    final icons = (decoded['icons'] as Map<String, dynamic>).cast<String, String>();
+    final displayNames = (decoded['displayNames'] as Map<String, dynamic>).cast<String, String>();
+
+    return _EpgParseResult(programs, icons, displayNames, count);
   }
 
   static DateTime? _parseXmltvTime(String t) {
@@ -376,7 +298,7 @@ class EpgParser {
       return memCache[epgid]!;
     }
 
-    // 2. 内存 miss，查数据库兜底（首次启动且无缓存时）
+    // 2. 内存 miss，查数据库兜底
     final channelId = await EpgDatabaseService.findChannelIdByDisplayName(epgid);
     if (channelId != null) {
       return await EpgDatabaseService.getProgramsByChannelId(channelId);
@@ -402,13 +324,11 @@ class EpgParser {
     final epgid = await getEpgidByChannelName(channelName);
     if (epgid == null) return null;
 
-    // 1. 优先内存
     final memIcons = _iconCache;
     if (memIcons != null && memIcons.containsKey(epgid)) {
       return memIcons[epgid];
     }
 
-    // 2. 兜底数据库
     var icon = await EpgDatabaseService.getChannelIcon(epgid);
     if (icon != null) return icon;
 
@@ -483,7 +403,7 @@ class EpgParser {
     return null;
   }
 
-  // ========== JSON 缓存文件（启动快速恢复）==========
+  // ========== JSON 缓存文件 ==========
   static Future<void> _saveCacheFile(
     Map<String, List<EpgProgram>> programs,
     Map<String, String> icons,
@@ -492,7 +412,6 @@ class EpgParser {
       final dir = await getApplicationDocumentsDirectory();
       final file = File('${dir.path}/$_epgCacheFileName');
 
-      // 大 JSON encode 放 Isolate
       final jsonString = await Isolate.run(() => jsonEncode({
         'programs': programs.map((k, v) => MapEntry(k, v.map((e) => e.toJson()).toList())),
         'icons': icons,
@@ -506,7 +425,6 @@ class EpgParser {
     }
   }
 
-  /// 启动时恢复内存缓存 - 大文件 decode 放 Isolate
   static Future<void> _loadCacheFromFile() async {
     try {
       final dir = await getApplicationDocumentsDirectory();
@@ -516,11 +434,13 @@ class EpgParser {
       final content = await file.readAsString();
       final result = await Isolate.run(() {
         final jsonData = jsonDecode(content) as Map<String, dynamic>;
-        final programs = (jsonData['programs'] as Map<String, dynamic>).map(
-          (k, v) => MapEntry(k, (v as List).map((e) => EpgProgram.fromJson(e)).toList()),
-        );
+        final rawPrograms = jsonData['programs'] as Map<String, dynamic>;
+        final programs = <String, List<EpgProgram>>{};
+        for (final entry in rawPrograms.entries) {
+          programs[entry.key] = (entry.value as List).map((e) => EpgProgram.fromJson(e)).toList();
+        }
         final icons = (jsonData['icons'] as Map<String, dynamic>).cast<String, String>();
-        return _CacheDecodeResult(programs, icons);
+        return _EpgParseResult(programs, icons, {}, 0);
       });
 
       _memoryCache = result.programs;
@@ -605,10 +525,6 @@ class EpgParser {
 
   static Future<void> warmUpCache() async {
     await _loadEpgNameMap();
-  }
-
-  static void dispose() {
-    _epgUpdateController.close();
   }
 }
 
