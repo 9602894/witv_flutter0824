@@ -18,7 +18,8 @@ import 'epg_database_service.dart';
 // ============================================================
 
 /// 解析 XML 并返回序列化后的 Map（供 compute 调用）
-Map<String, dynamic> _parseEpgXmlIsolate(String xmlContent) {
+/// 改为 async 以便写入数据库
+Future<Map<String, dynamic>> _parseEpgXmlIsolate(String xmlContent) async {
   final stopwatch = Stopwatch()..start();
   final document = XmlDocument.parse(xmlContent);
   final programs = <String, List<Map<String, dynamic>>>{};
@@ -76,6 +77,11 @@ Map<String, dynamic> _parseEpgXmlIsolate(String xmlContent) {
   }
 
   stopwatch.stop();
+
+  // ✅ 写入 SQLite 数据库（注意：这里 programs 是 Map<String, List<Map<String,dynamic>>>，
+  // 假设 EpgDatabaseService.insertPrograms 能接受此格式，否则需先转换）
+  await EpgDatabaseService.insertPrograms(programs, icons);
+
   return {
     'programs': programs,
     'icons': icons,
