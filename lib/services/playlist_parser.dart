@@ -55,8 +55,9 @@ class PlaylistParser {
             ));
           }
         }
-      } else if (line.endsWith('#genre#')) {
-        currentGroup = line.replaceAll('#genre#', '').trim();
+      } else if (line.contains('#genre#')) {
+        // 修复：去除可能残留的逗号
+        currentGroup = line.replaceAll(RegExp(r',?\s*#genre#\s*'), '').trim();
         groupMap.putIfAbsent(currentGroup, () => []);
       } else if (line.isNotEmpty && !line.startsWith('#')) {
         final parts = line.split(',');
