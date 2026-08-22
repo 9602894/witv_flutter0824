@@ -257,41 +257,27 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _loadAllEpg() async {
     try {
+      LogService.write('EPG: _loadAllEpg 开始执行');
       await EpgParser.warmUpCache();
 
       final isDbEmpty = await EpgDatabaseService.isEmpty();
+      LogService.write('EPG: 数据库是否为空=$isDbEmpty');
 
-      // FIX 1: 数据库为空时强制下载
       if (isDbEmpty) {
-        LogService.write('EPG: 数据库为空，开始首次下载...');
+        LogService.write('EPG: 数据库为空，开始首次强制下载...');
         try {
           await EpgParser.forceRefresh();
-        } catch (e) {
-          LogService.write('EPG首次加载失败: $e');
+          LogService.write('EPG: 首次下载并解析完成');
+        } catch (e, stack) {
+          LogService.writeCrashLog('EPG首次加载失败: $e', stack);
         }
-        return;
-      }
-
-      // FIX 2: 数据库有数据，检查是否超过 6 小时未更新
-      final settings = await EpgParser.getEpgSettings();
-      final lastUpdate = settings['last_epg_update'] as int?;
-      final lastDate = lastUpdate != null
-          ? DateTime.fromMillisecondsSinceEpoch(lastUpdate)
-          : DateTime(2000);
-
-      if (DateTime.now().difference(lastDate) >= const Duration(hours: 6)) {
-        LogService.write('EPG: 数据已过期，开始后台更新...');
-        // 后台静默更新，不阻塞
-        EpgParser.forceRefresh().then((_) {
-          LogService.write('EPG: 后台更新完成');
-        }).catchError((e) {
-          LogService.write('EPG后台更新失败: $e');
-        });
       } else {
-        LogService.write('EPG: 数据库数据有效，跳过下载');
+        LogService.write('EPG: 数据库已有数据，跳过首次下载');
+        // 可选：后台检查更新（不阻塞播放）
+        _checkEpgUpdate();
       }
-    } catch (e) {
-      LogService.write('加载EPG失败: $e');
+    } catch (e, stack) {
+      LogService.writeCrashLog('加载EPG失败: $e', stack);
     }
   }
 
