@@ -11,6 +11,7 @@ import '../services/playlist_parser.dart';
 import '../services/epg_parser.dart';
 import '../services/log_service.dart';
 import '../services/logo_service.dart';
+import '../services/epg_database_service.dart'; // ✅ 新增
 import '../models/channel.dart';
 import '../models/epg_program.dart';
 import '../models/subscription.dart';
@@ -60,7 +61,10 @@ class _HomeScreenState extends State<HomeScreen> {
   double _channelButtonInitTop = 0;
 
   // ---------- EPG（全局缓存，分组切换不复读） ----------
-  Map<String, List<EpgProgram>> epgMap = {};
+  // ❌ 删除内存缓存字段：Map<String, List<EpgProgram>> epgMap = {};
+  // ✅ 新增当前/下个节目字段
+  EpgProgram? _currentEpgProgram;
+  EpgProgram? _nextEpgProgram;
   bool _isEpgUpdating = false;
   bool _isEpgLoading = false;
 
@@ -72,7 +76,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // ---------- 配置 ----------
   late File _layoutConfigFile;
-  Timer? _epgUpdateTimer;
+  Timer? _epgUpdateTimer;   // 6小时检查更新
+  Timer? _epgInfoTimer;     // 每秒刷新当前节目信息
   final LogoService _logoService = LogoService();
 
   // ---------- 播放器重连 ----------
@@ -103,28 +108,6 @@ class _HomeScreenState extends State<HomeScreen> {
     return '${beijing.year}-${beijing.month.toString().padLeft(2, '0')}-${beijing.day.toString().padLeft(2, '0')}';
   }
 
-  EpgProgram? _getCurrentProgram(List<EpgProgram> programs) {
-    final now = _getNow();
-    for (var p in programs) {
-      if (p.start.isBefore(now) && p.end.isAfter(now)) return p;
-    }
-    return null;
-  }
-
-  EpgProgram? _getNextProgram(List<EpgProgram> programs) {
-    final now = _getNow();
-    final current = _getCurrentProgram(programs);
-    if (current == null) {
-      for (var p in programs) {
-        if (p.start.isAfter(now)) return p;
-      }
-      return null;
-    }
-    final idx = programs.indexOf(current);
-    if (idx >= 0 && idx < programs.length - 1) return programs[idx + 1];
-    return null;
-  }
-
   // ============================================================
   // 生命周期
   // ============================================================
@@ -141,6 +124,7 @@ class _HomeScreenState extends State<HomeScreen> {
     await _loadLayoutConfig();
     _initEpgScheduler();
     await _init();
+    _startEpgInfoTimer(); // ✅ 启动每秒刷新定时器
   }
 
   // ========== 布局配置 ==========
@@ -214,6 +198,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     _epgUpdateTimer?.cancel();
+    _epgInfoTimer?.cancel();
     _retryTimer?.cancel();
     _digitTimer?.cancel();
     _focusNode.dispose();
@@ -235,8 +220,9 @@ class _HomeScreenState extends State<HomeScreen> {
     try {
       final updated = await EpgParser.checkForUpdate();
       if (updated) {
-        LogService.write('EPG 已更新，重新加载缓存');
-        await _refreshEpgFromCache();
+        LogService.write('EPG 已更新，刷新当前节目信息');
+        // ✅ 更新后刷新当前显示的节目信息
+        await _updateEpgInfo();
       }
     } catch (e) {
       LogService.write('EPG 更新检查失败: $e');
@@ -246,102 +232,72 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ============================================================
-  // EPG 加载（核心优化：一次全量，分组切换不复读）
+  // EPG 加载（核心优化：一次性导入数据库）
   // ============================================================
 
-  /// 从缓存秒级恢复 EPG（首次启动/后台更新后调用）
-  Future<void> _refreshEpgFromCache() async {
-    if (_isEpgLoading) return;
-    if (channels.isEmpty) return;
-    _isEpgLoading = true;
-
-    try {
-      // 使用新 API：直接按频道名获取全部映射，无需 UI 层遍历转换
-      final channelNames = channels.map((c) => c.name).toList();
-      final newEpg = await EpgParser.getProgramsForChannels(channelNames);
-
-      if (mounted) {
-        setState(() => epgMap = newEpg);
-      }
-      LogService.write('EPG 秒级恢复完成，频道数: ${newEpg.length}');
-
-      // 后台预加载台标
-      if (channels.isNotEmpty) {
-        _logoService.preloadAllLogos(channels);
-      }
-    } catch (e) {
-      LogService.write('EPG 缓存恢复失败: $e');
-    } finally {
-      _isEpgLoading = false;
-    }
-  }
-
-  /// 全量加载 EPG（订阅源切换时调用一次，后续分组切换不再调用）
+  /// 从数据库或 JSON 文件加载 EPG 数据（替换原 _loadAllEpg）
   Future<void> _loadAllEpg() async {
-    if (_isEpgLoading) return;
-    if (channels.isEmpty) return;
-    _isEpgLoading = true;
-
     try {
-      // 优先走二进制缓存（毫秒级），若缓存未命中则后台解析
-      final all = await EpgParser.getAllPrograms();
-      if (all.isEmpty) {
-        LogService.write('EPG 缓存为空，等待后台下载');
+      final isDbEmpty = await EpgDatabaseService.isEmpty();
+      if (!isDbEmpty) {
+        LogService.write('EPG: 数据库已有数据，跳过加载');
         return;
       }
 
-      final nameToEpgId = await EpgParser.getNameToEpgId();
-      if (nameToEpgId.isEmpty) {
-        LogService.write('EPG 名称映射为空');
-        return;
-      }
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/epg_cache.json');
 
-      // 在 isolate 中做映射转换，避免主线程阻塞
-      final channelNames = channels.map((c) => c.name).toList();
-      final converted = await _mapEpgInIsolate(all, nameToEpgId, channelNames);
-
-      if (mounted) {
-        setState(() => epgMap = converted);
-      }
-      LogService.write('EPG 全量加载完成，匹配 ${converted.length} 频道');
-
-      if (channels.isNotEmpty) {
-        _logoService.preloadAllLogos(channels);
+      if (await file.exists()) {
+        final jsonString = await file.readAsString();
+        final jsonData = jsonDecode(jsonString);
+        final programs = (jsonData['programs'] as Map<String, dynamic>).map(
+          (k, v) => MapEntry(k, (v as List).map((e) => EpgProgram.fromJson(e)).toList()),
+        );
+        final icons = (jsonData['icons'] as Map<String, dynamic>).cast<String, String>();
+        await EpgDatabaseService.insertPrograms(programs, icons);
+        LogService.write('EPG: JSON 缓存已导入数据库');
+      } else {
+        // 从 assets 加载（首次启动）
+        final epgString = await rootBundle.loadString('assets/epg_data.json');
+        final jsonData = jsonDecode(epgString);
+        final programs = (jsonData['programs'] as Map<String, dynamic>).map(
+          (k, v) => MapEntry(k, (v as List).map((e) => EpgProgram.fromJson(e)).toList()),
+        );
+        final icons = (jsonData['icons'] as Map<String, dynamic>).cast<String, String>();
+        await EpgDatabaseService.insertPrograms(programs, icons);
+        LogService.write('EPG: assets 已导入数据库');
       }
     } catch (e) {
-      LogService.write('加载全量 EPG 失败: $e');
-    } finally {
-      _isEpgLoading = false;
+      LogService.write('加载EPG失败: $e');
     }
   }
 
-  /// Isolate 内完成 epgid->频道名 映射（大数据量不卡 UI）
-  static Map<String, List<EpgProgram>> _mapEpgInIsolate(
-    Map<String, List<EpgProgram>> all,
-    Map<String, String> nameToEpgId,
-    List<String> channelNames,
-  ) {
-    final converted = <String, List<EpgProgram>>{};
-    int matched = 0, missing = 0;
-    for (final name in channelNames) {
-      final epgid = nameToEpgId[name];
-      if (epgid != null && all.containsKey(epgid)) {
-        final list = all[epgid]!.map((p) => EpgProgram(
-          title: p.title,
-          start: p.start,
-          end: p.end,
-          desc: p.desc,
-        )).toList();
-        list.sort((a, b) => a.start.compareTo(b.start));
-        converted[name] = list;
-        matched++;
-      } else {
-        missing++;
-      }
+  // ============================================================
+  // EPG 查询（数据库版）
+  // ============================================================
+
+  Future<EpgProgram?> _getCurrentProgram(String channelName) async {
+    final now = _getNow(); // UTC
+    final programs = await EpgDatabaseService.getCurrentPrograms(channelName, now);
+    return programs.isNotEmpty ? programs.first : null;
+  }
+
+  Future<EpgProgram?> _getNextProgram(String channelName) async {
+    final now = _getNow(); // UTC
+    return await EpgDatabaseService.getNextProgram(channelName, now);
+  }
+
+  /// 刷新当前频道的节目信息（异步，更新状态）
+  Future<void> _updateEpgInfo() async {
+    if (currentChannel == null) return;
+    final current = await _getCurrentProgram(currentChannel!.name);
+    final next = await _getNextProgram(currentChannel!.name);
+    if (mounted) {
+      setState(() {
+        _currentEpgProgram = current;
+        _nextEpgProgram = next;
+      });
     }
-    // ignore: avoid_print
-    print('EPG 匹配：成功 $matched，失败 $missing');
-    return converted;
   }
 
   // ============================================================
@@ -380,7 +336,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ============================================================
-  // 修改后的 _switchChannel —— 直接赋值，不复建 PlatformView
+  // 修改后的 _switchChannel —— 直接赋值，不复建 PlatformView，并更新 EPG 信息
   // ============================================================
   void _switchChannel(Channel ch) {
     _cancelRetry();
@@ -388,12 +344,12 @@ class _HomeScreenState extends State<HomeScreen> {
     _digitTimer?.cancel();
     LogService.write('选择频道: ${ch.name}');
     setState(() {
-      // ✅ 直接赋值，不复建 PlatformView
       currentChannel = ch;
       _showEpgInfo = true;
       _selectedIndex = channels.indexOf(ch);
     });
     Provider.of<SettingsService>(context, listen: false).saveLastChannel(ch.name);
+    _updateEpgInfo(); // 异步更新，不阻塞
   }
 
   // ============================================================
@@ -427,6 +383,10 @@ class _HomeScreenState extends State<HomeScreen> {
     // 分组切换不复读 EPG，但可刷新当前分组台标
     _logoService.preloadAllLogos(channels);
     LogService.write('切换到分组: $groupName，频道数: ${channels.length}');
+    // 刷新当前频道 EPG 信息（若当前频道存在）
+    if (currentChannel != null) {
+      _updateEpgInfo();
+    }
   }
 
   // ============================================================
@@ -595,6 +555,10 @@ class _HomeScreenState extends State<HomeScreen> {
 
     // ✅ 关键优化：EPG 在后台异步加载，不阻塞分组显示和播放
     _loadAllEpg();
+    // 加载完成后刷新当前频道信息
+    if (currentChannel != null) {
+      _updateEpgInfo();
+    }
     LogService.write('分组数据应用完成，分组数: ${groups.length}，频道数: ${channels.length}');
   }
 
@@ -701,6 +665,9 @@ class _HomeScreenState extends State<HomeScreen> {
         _selectedIndex = idx;
       }
     }
+
+    // 空 EPG Map（ChannelList 和 ScheduleView 已改为从数据库读取，此处仅作占位）
+    const emptyEpgMap = <String, List<EpgProgram>>{};
 
     return RawKeyboardListener(
       focusNode: _focusNode,
@@ -859,7 +826,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                   channels: channels,
                                   selectedChannel: currentChannel,
                                   onSelect: _switchChannel,
-                                  epgMap: epgMap,
+                                  epgMap: emptyEpgMap, // 不再使用，改为数据库查询
                                   showChannelNumber: false,
                                   showLogo: true,
                                 ),
@@ -944,7 +911,7 @@ class _HomeScreenState extends State<HomeScreen> {
                               channels: channels,
                               selectedChannel: currentChannel,
                               onSelect: _switchChannel,
-                              epgMap: epgMap,
+                              epgMap: emptyEpgMap, // 不再使用
                               showChannelNumber: false,
                               showLogo: true,
                             ),
@@ -974,7 +941,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             child: ScheduleView(
                               channels: channels,
                               selectedChannel: currentChannel,
-                              epgMap: epgMap,
+                              epgMap: emptyEpgMap, // 不再使用
                               onSelectChannel: _switchChannel,
                               leftWeight: 0.3,
                               rightWeight: 0.7,
@@ -1021,7 +988,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
 
-              // ---------- EPG 信息浮窗 ----------
+              // ---------- EPG 信息浮窗（使用数据库状态） ----------
               if (_showEpgInfo && currentChannel != null)
                 Positioned(
                   left: 0,
@@ -1032,7 +999,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       constraints: const BoxConstraints(maxWidth: 500),
                       padding: const EdgeInsets.all(16),
                       decoration: const BoxDecoration(color: Colors.transparent),
-                      child: _buildEpgInfoWithLogo(currentChannel!),
+                      child: _buildEpgInfoWithLogo(), // 不再传入 channel
                     ),
                   ),
                 ),
@@ -1153,8 +1120,10 @@ class _HomeScreenState extends State<HomeScreen> {
   // 辅助构建方法
   // ============================================================
 
-  Widget _buildEpgInfoWithLogo(Channel channel) {
-    final programs = epgMap[channel.name] ?? <EpgProgram>[];
+  /// 构建 EPG 信息浮窗（直接使用 _currentEpgProgram 和 _nextEpgProgram）
+  Widget _buildEpgInfoWithLogo() {
+    if (currentChannel == null) return const SizedBox.shrink();
+    final channel = currentChannel!;
     final channelNumber = channel.number != null ? '${channel.number}  ' : '';
 
     return FutureBuilder<File?>(
@@ -1213,7 +1182,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     ],
                   ),
                   const SizedBox(height: 8),
-                  _buildEpgProgramInfo(programs),
+                  _buildEpgProgramInfo(), // 使用当前状态字段
                 ],
               ),
             ),
@@ -1238,9 +1207,10 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildEpgProgramInfo(List<EpgProgram> programs) {
-    final current = _getCurrentProgram(programs);
-    final next = _getNextProgram(programs);
+  /// 构建当前/下个节目信息（直接使用字段）
+  Widget _buildEpgProgramInfo() {
+    final current = _currentEpgProgram;
+    final next = _nextEpgProgram;
     final children = <Widget>[];
     if (current != null) {
       children.add(_buildEpgItem(current, '当前节目'));
@@ -1491,6 +1461,19 @@ class _HomeScreenState extends State<HomeScreen> {
     });
 
     LogService.write('初始化完成');
+  }
+
+  // ============================================================
+  // 每秒刷新 EPG 信息定时器
+  // ============================================================
+
+  void _startEpgInfoTimer() {
+    _epgInfoTimer?.cancel();
+    _epgInfoTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (currentChannel != null && _showEpgInfo) {
+        _updateEpgInfo();
+      }
+    });
   }
 
   Future<void> _loadSavedSubscriptions() async => Future.delayed(Duration.zero);
