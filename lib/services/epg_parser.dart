@@ -212,7 +212,7 @@ class EpgParser {
       }
     }
 
-    // FIX: 保存缓存文件（新增）
+    // FIX: 保存缓存文件
     await _saveCacheFile(programMap, channelIcons);
 
     _memoryCache = programMap;
@@ -467,7 +467,6 @@ class EpgParser {
     LogService.write('EPG URL 已更新: $url');
   }
 
-  // 新增：获取完整的 EPG 设置（用于检查更新过期）
   static Future<Map<String, dynamic>> getEpgSettings() async {
     try {
       final dir = await getApplicationDocumentsDirectory();
@@ -481,16 +480,15 @@ class EpgParser {
   }
 
   // ============================================================
-  // 缓存管理（FIX：移除自动恢复旧缓存的逻辑）
+  // 缓存管理（FIX: 启动时强制清空数据库）
   // ============================================================
 
   static Future<void> warmUpCache() async {
     try {
-      // FIX: 移除自动从旧缓存文件恢复的逻辑
-      // 之前的问题：旧缓存恢复后数据库有"假数据"，isDbEmpty()=false，
-      // forceRefresh() 永不执行，EPG 永远加载不了
-      // 缓存文件仍由 _parseAndCache() 保存，但启动时不自动恢复
-      // 只加载名称映射
+      // FIX: 启动时强制清空可能存在的旧/损坏数据
+      await EpgDatabaseService.clearAll();
+      LogService.write('EPG: 数据库已强制清空');
+
       await _loadEpgNameMap();
       LogService.write('EPG: 缓存预热完成');
     } catch (e, stack) {
