@@ -73,7 +73,7 @@ class IjkPlayerView(
     private fun createPlayer(): IjkMediaPlayer {
         val player = IjkMediaPlayer()
 
-        // ========== 【换台速度】网络探测参数 —— 越小越快 ==========
+        // ========== 【换台速度】网络探测 ==========
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "probesize", 512 * 1024L)
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "analyzeduration", 200 * 1000L)
 
@@ -93,8 +93,10 @@ class IjkPlayerView(
             "file,http,https,tcp,tls,crypto,rtsp,rtp,udp,rtmp,rtmps,rtmpt,rtmpts"
         )
 
-        // ========== 【画质】解码/渲染参数 —— 不影响打开流速度 ==========
-        player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "video-pictq-size", 3L)
+        // ========== 【画质】解码/渲染参数 ==========
+        // 画面队列默认 1，不要改大，改大会增加延迟
+        player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "video-pictq-size", 1L)
+
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "min-frames", 1L)
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "start-on-prepared", 1L)
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "packet-buffering", 1L)
@@ -104,27 +106,32 @@ class IjkPlayerView(
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "soundtouch", 1L)
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "avsync-threshold", 100L)
 
-        // ========== 【画质关键】max-fps 默认 31，必须解锁 ==========
+        // ========== 【画质关键】解锁高帧率 ==========
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "max-fps", 60L)
 
-        // ========== 【画质关键】硬解不丢帧 ==========
-        player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "framedrop", 0L)
+        // ========== 【流畅关键】framedrop 不能为 0 ==========
+        // 0 = 解码跟不上时硬撑，画面堆积 → 卡顿
+        // 1 = 轻微丢帧，保流畅，画质损失极小（硬解时）
 
-        // ========== 硬解画质优先 ==========
+        // ========== 解码器分支 ==========
         if (decoderIndex == 0) {
+            // 硬解：轻微丢帧保流畅，GPU 解码损失极小
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec", 1L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-all-videos", 1L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-avc", 1L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-hevc", 1L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-auto-rotate", 1L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-handle-resolution-change", 1L)
+            player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "framedrop", 1L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_CODEC, "skip_loop_filter", 48L)
         } else {
+            // 软解：更容易卡，需要更积极丢帧
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec", 0L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-all-videos", 0L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-hevc", 0L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_CODEC, "threads", 4L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_CODEC, "skip_loop_filter", 0L)
+            player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "framedrop", 5L)
         }
 
         // 回调
