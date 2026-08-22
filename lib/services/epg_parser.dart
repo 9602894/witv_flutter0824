@@ -111,7 +111,6 @@ class EpgParser {
     return false;
   }
 
-  // 修改：增强日志，便于排查
   static Future<void> forceRefresh() async {
     try {
       final settings = await _loadSettings();
@@ -288,7 +287,22 @@ class EpgParser {
   }
 
   // ============================================================
-  // 新增公共方法：获取/保存 EPG URL
+  // 新增方法（兼容旧调用 & LogoService）
+  // ============================================================
+
+  /// 获取频道图标 URL（兼容旧调用）
+  static Future<String?> getChannelIconUrl(String channelName) async {
+    return getChannelIcon(channelName);
+  }
+
+  /// 获取完整 name → epgid 映射（供 LogoService 使用）
+  static Future<Map<String, String>> getNameToEpgId() async {
+    await _loadEpgNameMap();
+    return _nameToEpgidMap ?? {};
+  }
+
+  // ============================================================
+  // 公共方法：获取/保存 EPG URL
   // ============================================================
 
   static Future<String?> getEpgUrl() async {
