@@ -281,6 +281,12 @@ class EpgParser {
     await initialize();
     return EpgDatabaseService.getCachedHash();
   }
+
+  /// 获取全部 name -> epgid 映射（供外部使用）
+  static Future<Map<String, String>> getNameToEpgId() async {
+    await initialize();
+    return EpgDatabaseService.getAllMappings();
+  }
 }
 
 class Mutex {
