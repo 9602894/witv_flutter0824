@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart'; // ⬅️ 新增，用于 compute
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:xml/xml.dart';
@@ -43,13 +44,14 @@ class EpgParser {
   }
 
   // ============================================================
-  // 加载 epg_data.json
+  // 加载 epg_data.json（增加日志）
   // ============================================================
 
   static Future<void> _loadEpgNameMap() async {
     if (_nameToEpgidMap != null) return;
 
     try {
+      LogService.write('EPG: 开始加载 epg_data.json...');
       final jsonString = await rootBundle.loadString(_epgDataJsonAsset);
       final List<dynamic> data = jsonDecode(jsonString);
 
@@ -142,16 +144,47 @@ class EpgParser {
   }
 
   // ============================================================
-  // XML 解析
+  // XML 解析（使用 Isolate 避免阻塞 UI）
   // ============================================================
 
   static Future<void> _parseAndCache(String xmlString, String sourceUrl) async {
     final stopwatch = Stopwatch()..start();
 
-    await EpgDatabaseService.clearAll();
+    LogService.write('EPG: 开始在Isolate中解析XML，长度=${xmlString.length}');
+    final result = await compute(_parseXmlInIsolate, xmlString);
+    LogService.write('EPG: Isolate解析完成，开始写入数据库');
 
+    final programJsonMap = (result['programs'] as Map<String, dynamic>).map(
+      (k, v) => MapEntry(k, (v as List).map((e) => e as Map<String, dynamic>).toList()),
+    );
+    final channelIcons = (result['icons'] as Map<String, dynamic>).cast<String, String>();
+
+    final programMap = programJsonMap.map((k, v) => MapEntry(
+      k,
+      v.map((e) => EpgProgram(
+        title: e['title'] as String,
+        description: e['description'] as String,
+        start: DateTime.parse(e['start'] as String),
+        stop: DateTime.parse(e['stop'] as String),
+      )).toList(),
+    ));
+
+    await EpgDatabaseService.clearAll();
+    await EpgDatabaseService.insertPrograms(programMap, channelIcons);
+
+    _memoryCache = programMap;
+    _iconCache = channelIcons;
+    _cacheTime = DateTime.now();
+
+    stopwatch.stop();
+    LogService.write('EPG解析完成: ${programMap.length} 频道, ${result['count']} 节目, 耗时 ${stopwatch.elapsedMilliseconds}ms');
+  }
+
+  /// 在 Isolate 中解析 XML，避免阻塞 UI
+  static Map<String, dynamic> _parseXmlInIsolate(String xmlString) {
     final document = XmlDocument.parse(xmlString);
 
+    // 1. 解析 channel
     final displayNameToChannelId = <String, String>{};
     final channelIcons = <String, String>{};
 
@@ -163,21 +196,18 @@ class EpgParser {
       final displayNames = channel.findAllElements('display-name');
       for (final dn in displayNames) {
         final name = dn.value?.trim() ?? '';
-        if (name.isNotEmpty) {
-          displayNameToChannelId[name] = id;
-        }
+        if (name.isNotEmpty) displayNameToChannelId[name] = id;
       }
 
       final iconElem = channel.getElement('icon');
       if (iconElem != null) {
         final src = iconElem.getAttribute('src');
-        if (src != null && src.isNotEmpty) {
-          channelIcons[id] = src;
-        }
+        if (src != null && src.isNotEmpty) channelIcons[id] = src;
       }
     }
 
-    final programMap = <String, List<EpgProgram>>{};
+    // 2. 解析 programme
+    final programJsonMap = <String, List<Map<String, dynamic>>>{};
     final programmes = document.findAllElements('programme');
 
     for (final prog in programmes) {
@@ -193,28 +223,24 @@ class EpgParser {
       final title = prog.getElement('title')?.value ?? '';
       final desc = prog.getElement('desc')?.value ?? '';
 
-      final program = EpgProgram(
-        title: title,
-        description: desc,
-        start: start,
-        stop: stop,
-      );
-
-      programMap.putIfAbsent(channelId, () => []).add(program);
+      programJsonMap.putIfAbsent(channelId, () => []).add({
+        'title': title,
+        'description': desc,
+        'start': start.toIso8601String(),
+        'stop': stop.toIso8601String(),
+      });
     }
 
-    for (final entry in programMap.entries) {
-      entry.value.sort((a, b) => a.start.compareTo(b.start));
+    // 3. 按时间排序
+    for (final entry in programJsonMap.entries) {
+      entry.value.sort((a, b) => DateTime.parse(a['start']!).compareTo(DateTime.parse(b['start']!)));
     }
 
-    await EpgDatabaseService.insertPrograms(programMap, channelIcons);
-
-    _memoryCache = programMap;
-    _iconCache = channelIcons;
-    _cacheTime = DateTime.now();
-
-    stopwatch.stop();
-    LogService.write('EPG解析完成: ${programMap.length} 频道, ${programmes.length} 节目, 耗时 ${stopwatch.elapsedMilliseconds}ms');
+    return {
+      'programs': programJsonMap,
+      'icons': channelIcons,
+      'count': programmes.length,
+    };
   }
 
   static DateTime? _parseXmltvTime(String t) {
