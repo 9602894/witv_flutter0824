@@ -189,21 +189,19 @@ class EpgDatabaseService {
   }
 
   // ============================================================
-  // 查询接口
+  // 查询接口（忽略大小写）
   // ============================================================
 
   static Future<String?> findChannelIdByDisplayName(String displayName) async {
     if (displayName.isEmpty) return null;
     final db = await database;
-    final result = await db.query(
-      'channels',
-      columns: ['channel_id'],
-      where: 'display_name = ? OR channel_id = ?',
-      whereArgs: [displayName, displayName],
-      limit: 1,
+    // FIX: 使用 LOWER 忽略大小写
+    final result = await db.rawQuery(
+      'SELECT channel_id FROM channels WHERE LOWER(display_name) = LOWER(?) LIMIT 1',
+      [displayName],
     );
     if (result.isNotEmpty) {
-      return result.first['channel_id'] as String;
+      return result.first['channel_id'] as String?;
     }
     return null;
   }
@@ -228,12 +226,10 @@ class EpgDatabaseService {
   static Future<String?> getChannelIcon(String channelId) async {
     if (channelId.isEmpty) return null;
     final db = await database;
-    final result = await db.query(
-      'channels',
-      columns: ['icon'],
-      where: 'channel_id = ?',
-      whereArgs: [channelId],
-      limit: 1,
+    // FIX: 使用 LOWER 忽略大小写
+    final result = await db.rawQuery(
+      'SELECT icon FROM channels WHERE LOWER(channel_id) = LOWER(?) LIMIT 1',
+      [channelId],
     );
     if (result.isNotEmpty) {
       return result.first['icon'] as String?;
