@@ -92,6 +92,9 @@ class _HomeScreenState extends State<HomeScreen> {
   // ---------- 自动加载标记 ----------
   bool _autoLoaded = false;
 
+  // ADDED: EPG 更新订阅
+  StreamSubscription? _epgUpdateSub;
+
   // ============================================================
   // 工具函数（强制东八区）
   // ============================================================
@@ -113,6 +116,14 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _initAsync();
+
+    // ADDED: EPG 更新后自动刷新当前频道信息
+    _epgUpdateSub = EpgParser.onEpgUpdated.listen((_) {
+      if (!mounted) return;
+      LogService.write('EPG: UI 收到更新通知');
+      _updateEpgInfo();
+      if (isScheduleMode) setState(() {});
+    });
   }
 
   // FIX: 启动时直接加载 EPG（后台，不阻塞）
@@ -242,6 +253,11 @@ class _HomeScreenState extends State<HomeScreen> {
     _digitTimer?.cancel();
     _focusNode.dispose();
     _saveLayoutConfig();
+
+    // ADDED: 取消 EPG 更新订阅并释放 EPG 资源
+    _epgUpdateSub?.cancel();
+    EpgParser.dispose();
+
     super.dispose();
   }
 
