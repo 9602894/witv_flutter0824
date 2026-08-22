@@ -76,19 +76,20 @@ class EpgDatabaseService {
     LogService.write('EPG数据库已清空');
   }
 
+  // FIX: 检查 programs 表（真正存节目数据的表），不是 channels
   static Future<bool> isEmpty() async {
     final db = await database;
     final count = Sqflite.firstIntValue(
-      await db.rawQuery('SELECT COUNT(*) FROM channels'),
+      await db.rawQuery('SELECT COUNT(*) FROM programs'),
     );
     return count == 0;
   }
 
   // ============================================================
-  // 批量插入（修复 4）
+  // 批量插入
   // ============================================================
 
-  /// 新增：批量更新 display-name
+  /// 批量更新 display-name
   static Future<void> batchUpdateDisplayNames(Map<String, String> displayNames) async {
     if (displayNames.isEmpty) return;
     final db = await database;
@@ -109,7 +110,7 @@ class EpgDatabaseService {
     LogService.write('EPG: 批量更新 display-name 完成，共 ${displayNames.length} 条');
   }
 
-  /// 新增：批量更新图标
+  /// 批量更新图标
   static Future<void> batchUpdateIcons(Map<String, String> icons) async {
     if (icons.isEmpty) return;
     final db = await database;
@@ -130,7 +131,7 @@ class EpgDatabaseService {
     LogService.write('EPG: 批量更新图标完成，共 ${icons.length} 条');
   }
 
-  /// 新增：批量插入节目（使用 batch）
+  /// 批量插入节目（使用 batch）
   static Future<void> insertProgramsBatch(
     Map<String, List<EpgProgram>> programMap,
   ) async {
