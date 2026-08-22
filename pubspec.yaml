@@ -33,6 +33,8 @@ flutter:
   assets:
     - assets/configuration.json
     - assets/epg_data.json
+    - assets/epg_init.db      # 新增：预构建数据库
+    - assets/epg_data.json    # 保留：作为 fallback
 
 flutter_launcher_icons:
   android: true
