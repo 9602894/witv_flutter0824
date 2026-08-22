@@ -212,12 +212,38 @@ class EpgParser {
       }
     }
 
+    // FIX: 保存缓存文件（新增）
+    await _saveCacheFile(programMap, channelIcons);
+
     _memoryCache = programMap;
     _iconCache = channelIcons;
     _cacheTime = DateTime.now();
 
     stopwatch.stop();
     LogService.write('EPG解析完成: ${programMap.length} 频道, ${parsed.count} 节目, 耗时 ${stopwatch.elapsedMilliseconds}ms');
+  }
+
+  // ============================================================
+  // 新增：保存缓存文件
+  // ============================================================
+
+  static Future<void> _saveCacheFile(
+    Map<String, List<EpgProgram>> programs,
+    Map<String, String> icons,
+  ) async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/$_epgCacheFileName');
+      final jsonData = {
+        'programs': programs.map((k, v) => MapEntry(k, v.map((e) => e.toJson()).toList())),
+        'icons': icons,
+        'savedAt': DateTime.now().millisecondsSinceEpoch,
+      };
+      await file.writeAsString(jsonEncode(jsonData));
+      LogService.write('EPG: 缓存文件已保存');
+    } catch (e) {
+      LogService.write('EPG: 缓存文件保存失败: $e');
+    }
   }
 
   // ============================================================
@@ -425,7 +451,7 @@ class EpgParser {
   }
 
   // ============================================================
-  // 公共方法：获取/保存 EPG URL
+  // 公共方法：获取/保存 EPG URL 和设置
   // ============================================================
 
   static Future<String?> getEpgUrl() async {
@@ -439,6 +465,19 @@ class EpgParser {
     settings[_epgUrlKey] = url;
     await _saveSettings(settings);
     LogService.write('EPG URL 已更新: $url');
+  }
+
+  // 新增：获取完整的 EPG 设置（用于检查更新过期）
+  static Future<Map<String, dynamic>> getEpgSettings() async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/epg_settings.json');
+      if (await file.exists()) {
+        final content = await file.readAsString();
+        return jsonDecode(content) as Map<String, dynamic>;
+      }
+    } catch (_) {}
+    return {};
   }
 
   // ============================================================
