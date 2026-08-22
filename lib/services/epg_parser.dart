@@ -35,8 +35,6 @@ class EpgParser {
   /// 获取当前时间（强制东八区）
   static DateTime get beijingNow {
     final now = DateTime.now();
-    // 无论系统时区是什么，都当成东八区处理
-    // 方法：获取 UTC 时间，然后加 8 小时
     return now.toUtc().add(const Duration(hours: 8));
   }
 
@@ -67,7 +65,6 @@ class EpgParser {
       for (final item in data) {
         final epgid = item['epgid'] as String;
         final namesStr = item['name'] as String;
-        // name 字段是逗号分隔的多个频道名
         final names = namesStr.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty);
         for (final name in names) {
           _nameToEpgidMap![name] = epgid;
@@ -102,7 +99,6 @@ class EpgParser {
           ? DateTime.fromMillisecondsSinceEpoch(lastUpdate)
           : DateTime(2000);
 
-      // 每6小时检查一次
       if (DateTime.now().difference(lastDate) < const Duration(hours: 6)) {
         return false;
       }
@@ -159,14 +155,10 @@ class EpgParser {
   static Future<void> _parseAndCache(String xmlString, String sourceUrl) async {
     final stopwatch = Stopwatch()..start();
 
-    // 1. 清空旧数据
     await EpgDatabaseService.clearAll();
 
-    // 2. 解析 XML
     final document = XmlDocument.parse(xmlString);
 
-    // 3. 先解析 channel 元素，建立 display-name -> channel id 映射
-    // 同时收集 icon
     final displayNameToChannelId = <String, String>{};
     final channelIcons = <String, String>{};
 
@@ -175,7 +167,6 @@ class EpgParser {
       final id = channel.getAttribute('id');
       if (id == null) continue;
 
-      // 获取 display-name（可能有多个，取第一个匹配的）
       final displayNames = channel.findAllElements('display-name');
       for (final dn in displayNames) {
         final name = dn.value?.trim() ?? '';
@@ -184,7 +175,6 @@ class EpgParser {
         }
       }
 
-      // 获取 icon
       final iconElem = channel.getElement('icon');
       if (iconElem != null) {
         final src = iconElem.getAttribute('src');
@@ -194,7 +184,6 @@ class EpgParser {
       }
     }
 
-    // 4. 解析 programme，按 channel id 分组
     final programMap = <String, List<EpgProgram>>{};
     final programmes = document.findAllElements('programme');
 
@@ -221,15 +210,12 @@ class EpgParser {
       programMap.putIfAbsent(channelId, () => []).add(program);
     }
 
-    // 5. 对每个 channel 的节目按时间排序
     for (final entry in programMap.entries) {
       entry.value.sort((a, b) => a.start.compareTo(b.start));
     }
 
-    // 6. 批量写入数据库（一次性事务）
     await EpgDatabaseService.insertPrograms(programMap, channelIcons);
 
-    // 7. 更新内存缓存
     _memoryCache = programMap;
     _iconCache = channelIcons;
     _cacheTime = DateTime.now();
@@ -241,11 +227,8 @@ class EpgParser {
   /// 解析 XMLTV 时间格式（多种格式兼容）
   static DateTime? _parseXmltvTime(String t) {
     try {
-      // 格式1: 20240115120000 +0800
-      // 格式2: 20240115120000
       String s = t.trim();
 
-      // 去掉时区信息（因为我们强制东八区）
       final tzIdx = s.indexOfRegExp(RegExp(r'[+-]\\d{4}'));
       if (tzIdx > 0) {
         s = s.substring(0, tzIdx).trim();
@@ -258,7 +241,6 @@ class EpgParser {
         final hour = int.parse(s.substring(8, 10));
         final minute = int.parse(s.substring(10, 12));
         final second = int.parse(s.substring(12, 14));
-        // XMLTV 时间通常是本地时间或带时区的，我们统一转为 UTC 再处理
         return DateTime.utc(year, month, day, hour, minute, second);
       }
     } catch (_) {}
@@ -273,21 +255,18 @@ class EpgParser {
   static Future<List<EpgProgram>> getProgramsByChannelName(String channelName) async {
     if (channelName.isEmpty) return [];
 
-    // 第一层：频道名称 → epgid
     final epgid = await getEpgidByChannelName(channelName);
     if (epgid == null) {
       LogService.write('EPG: 未找到频道映射: $channelName');
       return [];
     }
 
-    // 第二层：epgid → channel id（通过 display-name 匹配）
     final channelId = await EpgDatabaseService.findChannelIdByDisplayName(epgid);
     if (channelId == null) {
       LogService.write('EPG: 未找到 channel id: epgid=$epgid');
       return [];
     }
 
-    // 第三层：channel id → programmes
     final programs = await EpgDatabaseService.getProgramsByChannelId(channelId);
     return programs;
   }
@@ -320,6 +299,21 @@ class EpgParser {
   }
 
   // ============================================================
+  // 新增方法（放在 getChannelIcon 后面）
+  // ============================================================
+
+  /// 获取频道图标 URL（兼容旧调用）
+  static Future<String?> getChannelIconUrl(String channelName) async {
+    return getChannelIcon(channelName);
+  }
+
+  /// 获取完整 name → epgid 映射（供 LogoService 使用）
+  static Future<Map<String, String>> getNameToEpgId() async {
+    await _loadEpgNameMap();
+    return _nameToEpgidMap ?? {};
+  }
+
+  // ============================================================
   // 缓存管理
   // ============================================================
 
@@ -328,7 +322,6 @@ class EpgParser {
     try {
       final isDbEmpty = await EpgDatabaseService.isEmpty();
       if (isDbEmpty) {
-        // 尝试从 JSON 缓存文件加载
         final dir = await getApplicationDocumentsDirectory();
         final file = File('${dir.path}/$_epgCacheFileName');
         if (await file.exists()) {
@@ -343,7 +336,6 @@ class EpgParser {
         }
       }
 
-      // 加载名称映射
       await _loadEpgNameMap();
 
       LogService.write('EPG: 缓存预热完成');
