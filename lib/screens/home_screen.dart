@@ -90,7 +90,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Timer? _digitTimer;
 
   // ---------- 自动加载标记 ----------
-  VoidCallback? _epgListener;   // ADDED
+  VoidCallback? _epgListener;   // 新增字段
   bool _autoLoaded = false;
 
   // ============================================================
@@ -245,6 +245,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    // 移除 EPG 更新监听
     if (_epgListener != null) {
       EpgParser.epgUpdateCounter.removeListener(_epgListener!);
     }
