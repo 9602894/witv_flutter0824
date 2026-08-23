@@ -1,21 +1,32 @@
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
-import 'package:flutter/painting.dart';
 import '../models/channel.dart';
 import '../models/epg_program.dart';
 import '../services/logo_service.dart';
 
-class _ChannelLogo extends StatefulWidget {
+/// 从本地 logo 文件夹加载台标的公共组件
+class ChannelLogo extends StatefulWidget {
   final String channelName;
-  final String? fallbackUrl;
-  const _ChannelLogo({required this.channelName, this.fallbackUrl});
+  final double width;
+  final double height;
+  final BoxFit fit;
+  final Color? backgroundColor;
+
+  const ChannelLogo({
+    Key? key,
+    required this.channelName,
+    this.width = 32,
+    this.height = 32,
+    this.fit = BoxFit.contain,
+    this.backgroundColor,
+  }) : super(key: key);
 
   @override
-  State<_ChannelLogo> createState() => _ChannelLogoState();
+  State<ChannelLogo> createState() => _ChannelLogoState();
 }
 
-class _ChannelLogoState extends State<_ChannelLogo> {
+class _ChannelLogoState extends State<ChannelLogo> {
   Uint8List? _logoBytes;
 
   @override
@@ -25,7 +36,7 @@ class _ChannelLogoState extends State<_ChannelLogo> {
   }
 
   @override
-  void didUpdateWidget(_ChannelLogo oldWidget) {
+  void didUpdateWidget(ChannelLogo oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.channelName != widget.channelName) {
       if (mounted) setState(() => _logoBytes = null);
@@ -45,15 +56,25 @@ class _ChannelLogoState extends State<_ChannelLogo> {
   @override
   Widget build(BuildContext context) {
     if (_logoBytes != null && _logoBytes!.isNotEmpty) {
-      return Image.memory(
-        _logoBytes!,
-        width: 32,
-        height: 32,
-        gaplessPlayback: true,
-        errorBuilder: (_, __, ___) => const Icon(Icons.tv, color: Colors.white54, size: 24),
+      return Container(
+        width: widget.width,
+        height: widget.height,
+        color: widget.backgroundColor ?? Colors.transparent,
+        child: Image.memory(
+          _logoBytes!,
+          width: widget.width,
+          height: widget.height,
+          fit: widget.fit,
+          gaplessPlayback: true,
+          errorBuilder: (_, __, ___) => _buildPlaceholder(),
+        ),
       );
     }
-    return const Icon(Icons.tv, color: Colors.white54, size: 24);
+    return _buildPlaceholder();
+  }
+
+  Widget _buildPlaceholder() {
+    return SizedBox(width: widget.width, height: widget.height);
   }
 }
 
@@ -78,7 +99,7 @@ class ChannelList extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ListView.builder(
-      key: ValueKey('cl_${channels.hashCode}'),
+      key: ValueKey('cl_\${channels.hashCode}'),
       itemCount: channels.length,
       itemBuilder: (context, index) {
         final channel = channels[index];
@@ -86,14 +107,15 @@ class ChannelList extends StatelessWidget {
         return ListTile(
           dense: true,
           leading: showLogo
-              ? _ChannelLogo(
+              ? ChannelLogo(
                   channelName: channel.name,
-                  fallbackUrl: channel.logoUrl,
+                  width: 32,
+                  height: 32,
                 )
               : null,
           title: Text(
             showChannelNumber && channel.number != null
-                ? '${channel.number}. ${channel.name}'
+                ? '\${channel.number}. \${channel.name}'
                 : channel.name,
             style: TextStyle(
               color: isSelected ? Colors.yellow : Colors.white,
