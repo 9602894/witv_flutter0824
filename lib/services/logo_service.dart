@@ -70,7 +70,7 @@ class LogoService {
     final prefs = await SharedPreferences.getInstance();
     final jsonStr = prefs.getString(_prefsKeySources);
     if (jsonStr == null || jsonStr.isEmpty) {
-      return []; // 默认不选任何来源，由用户设置
+      return [];
     }
     try {
       final list = jsonDecode(jsonStr) as List<dynamic>;
@@ -98,7 +98,6 @@ class LogoService {
     return sources.isNotEmpty;
   }
 
-  /// 彻底清空所有台标缓存（内存 + 磁盘 + 映射）
   Future<void> clearLogoCache() async {
     try {
       final logoDir = await _getLogoDir();
@@ -114,21 +113,15 @@ class LogoService {
       _nameMapLoaded = false;
       LogService.write('LogoService: 已清空所有台标缓存');
     } catch (e) {
-      LogService.write('LogoService: 清空缓存失败: \$e');
+      LogService.write('LogoService: 清空缓存失败: $e');
     }
   }
 
-  // ==================== 加载逻辑（只读本地，绝不自动下载） ====================
-
-  /// 获取台标（只读本地 logo 文件夹）
-  /// 本地没有则返回 null，不会触发任何网络请求
   Future<File?> getLogo(String channelName, {String? fallbackUrl}) async {
-    // 1. 内存缓存
     if (_logoResultCache.containsKey(channelName)) {
       return _logoResultCache[channelName];
     }
 
-    // 2. epgId 缓存映射
     final epgId = await _getEpgId(channelName);
     if (epgId != null && _epgIdLogoCache.containsKey(epgId)) {
       final cached = _epgIdLogoCache[epgId];
@@ -136,8 +129,7 @@ class LogoService {
       return cached;
     }
 
-    // 3. 只检查本地 logo 文件夹
-    final cacheName = epgId != null ? '\$epgId.png' : '\${_sanitizeFileName(channelName)}.png';
+    final cacheName = epgId != null ? '${epgId}.png' : '${_sanitizeFileName(channelName)}.png';
     final logoDir = await _getLogoDir();
     final cacheFile = File(p.join(logoDir.path, cacheName));
 
@@ -147,22 +139,17 @@ class LogoService {
       return cacheFile;
     }
 
-    // 本地没有，返回 null，绝不自动下载
     return null;
   }
 
-  /// 检查本地是否已有该频道台标
   Future<bool> hasLocalLogo(String channelName) async {
     final file = await getLogo(channelName);
     return file != null && await file.exists();
   }
 
-  // ==================== 显式下载逻辑（用户触发） ====================
-
-  /// 显式下载单个台标（用户设置来源后调用）
   Future<File?> downloadLogo(String channelName, {String? fallbackUrl}) async {
     final epgId = await _getEpgId(channelName);
-    final cacheName = epgId != null ? '\$epgId.png' : '\${_sanitizeFileName(channelName)}.png';
+    final cacheName = epgId != null ? '${epgId}.png' : '${_sanitizeFileName(channelName)}.png';
     final logoDir = await _getLogoDir();
     final cacheFile = File(p.join(logoDir.path, cacheName));
 
@@ -174,7 +161,7 @@ class LogoService {
       return await _pendingDownloads[cacheName]!;
     }
 
-    LogService.write('Logo: 开始下载 \$channelName -> \$cacheName');
+    LogService.write('Logo: 开始下载 $channelName -> $cacheName');
     final downloadTask = _downloadFromSources(channelName, cacheName, fallbackUrl: fallbackUrl);
     _pendingDownloads[cacheName] = downloadTask;
 
@@ -190,7 +177,6 @@ class LogoService {
     }
   }
 
-  /// 批量下载台标（用户确认来源后执行）
   Future<void> downloadAllLogos(List<Channel> channels) async {
     final sources = await getEnabledSources();
     if (sources.isEmpty) {
@@ -198,7 +184,7 @@ class LogoService {
       return;
     }
 
-    LogService.write('LogoService: 开始批量下载台标，共 \${channels.length} 个频道');
+    LogService.write('LogoService: 开始批量下载台标，共 ${channels.length} 个频道');
     const batchSize = _maxConcurrent;
     var successCount = 0;
     var failCount = 0;
@@ -214,10 +200,9 @@ class LogoService {
         else failCount++;
       }
     }
-    LogService.write('LogoService: 批量下载完成，成功 \$successCount，失败 \$failCount');
+    LogService.write('LogoService: 批量下载完成，成功 $successCount，失败 $failCount');
   }
 
-  /// 预加载本地已有台标到内存（不触发网络）
   Future<void> preloadAllLogos(List<Channel> channels) async {
     LogService.write('LogoService: 开始预加载本地台标');
     const batchSize = _maxConcurrent;
@@ -241,10 +226,8 @@ class LogoService {
   void updateM3uLogos(Map<String, String> logos) {
     _m3uLogos.clear();
     _m3uLogos.addAll(logos);
-    LogService.write('LogoService: 收到 M3U logo 映射 \${logos.length} 条');
+    LogService.write('LogoService: 收到 M3U logo 映射 ${logos.length} 条');
   }
-
-  // ==================== 内部下载实现 ====================
 
   Future<File?> _downloadFromSources(String channelName, String cacheName, {String? fallbackUrl}) async {
     final logoDir = await _getLogoDir();
@@ -256,11 +239,10 @@ class LogoService {
 
     final sources = await getEnabledSources();
     if (sources.isEmpty) {
-      LogService.write('Logo: \$channelName 未配置来源，跳过下载');
+      LogService.write('Logo: $channelName 未配置来源，跳过下载');
       return null;
     }
 
-    // 1. 按用户配置的来源顺序尝试
     for (final source in sources) {
       Uint8List? imageBytes;
       String? sourceDesc;
@@ -277,16 +259,16 @@ class LogoService {
           String? fileName;
           final epgId = await _getEpgId(channelName);
           if (epgId != null) {
-            fileName = '\$epgId.png';
+            fileName = '${epgId}.png';
           } else {
-            fileName = '\${_sanitizeFileName(channelName)}.png';
+            fileName = '${_sanitizeFileName(channelName)}.png';
           }
           sourceDesc = 'GitHub';
           final token = await ConfigService.getGitHubToken();
-          final url = '\$_baseLogoUrl\$fileName';
+          final url = '$_baseLogoUrl$fileName';
           final headers = <String, String>{};
           if (token != null && token.isNotEmpty) {
-            headers['Authorization'] = 'token \$token';
+            headers['Authorization'] = 'token $token';
           }
           imageBytes = await _fetchBytes(url, headers: headers);
           break;
@@ -302,40 +284,36 @@ class LogoService {
       if (imageBytes != null) {
         try {
           if (source == LogoSource.github) {
-            // GitHub 仓库的台标已经是透明的，直接保存
             await cacheFile.writeAsBytes(imageBytes);
-            LogService.write('Logo: \$channelName 从 GitHub 直接保存 \$cacheName');
+            LogService.write('Logo: $channelName 从 GitHub 直接保存 $cacheName');
           } else {
-            // M3U/EPG 来源：强制透明化处理（去白底）
             final processed = await _processTransparency(imageBytes, cacheName);
             await cacheFile.writeAsBytes(processed);
-            LogService.write('Logo: \$channelName 从 \$sourceDesc 透明化处理后保存 \$cacheName');
+            LogService.write('Logo: $channelName 从 $sourceDesc 透明化处理后保存 $cacheName');
           }
           return cacheFile;
         } catch (e) {
-          LogService.write('Logo: \$channelName \$sourceDesc 处理失败 - \$e');
+          LogService.write('Logo: $channelName $sourceDesc 处理失败 - $e');
         }
       }
     }
 
-    // 2. 配置来源全部失败，用 fallbackUrl 兜底
     if (fallbackUrl != null && fallbackUrl.isNotEmpty) {
-      LogService.write('Logo: \$channelName 配置来源失败，尝试 fallbackUrl');
+      LogService.write('Logo: $channelName 配置来源失败，尝试 fallbackUrl');
       final imageBytes = await _fetchBytes(fallbackUrl);
       if (imageBytes != null) {
         try {
-          // fallback 也做透明化处理
           final processed = await _processTransparency(imageBytes, cacheName);
           await cacheFile.writeAsBytes(processed);
-          LogService.write('Logo: \$channelName fallbackUrl 透明化处理后保存 \$cacheName');
+          LogService.write('Logo: $channelName fallbackUrl 透明化处理后保存 $cacheName');
           return cacheFile;
         } catch (e) {
-          LogService.write('Logo: \$channelName fallbackUrl 处理失败 - \$e');
+          LogService.write('Logo: $channelName fallbackUrl 处理失败 - $e');
         }
       }
     }
 
-    LogService.write('Logo: \$channelName 所有来源失败');
+    LogService.write('Logo: $channelName 所有来源失败');
     return null;
   }
 
@@ -346,12 +324,10 @@ class LogoService {
         return response.bodyBytes;
       }
     } catch (e) {
-      LogService.write('Logo: 下载失败 \$url - \$e');
+      LogService.write('Logo: 下载失败 $url - $e');
     }
     return null;
   }
-
-  // ==================== 透明化处理 ====================
 
   Future<Uint8List> _processTransparency(Uint8List imageBytes, String fileName) async {
     img.Image? decoded;
@@ -384,17 +360,15 @@ class LogoService {
     }
 
     if (decoded == null) {
-      LogService.write('Logo: 无法解码 \$fileName');
+      LogService.write('Logo: 无法解码 $fileName');
       return imageBytes;
     }
 
     final image = decoded;
 
-    // 提取背景色
     final bgColor = _getBackgroundColor(image);
-    LogService.write('Logo: \$fileName 背景色 RGB(\${bgColor.r},\${bgColor.g},\${bgColor.b})');
+    LogService.write('Logo: $fileName 背景色 RGB(${bgColor.r},${bgColor.g},${bgColor.b})');
 
-    // 透明化处理
     final rgba = image.convert(numChannels: 4);
     int transparentCount = 0;
 
@@ -415,11 +389,9 @@ class LogoService {
       }
     }
 
-    LogService.write('Logo: \$fileName \$transparentCount/\${rgba.width * rgba.height} 像素透明化');
+    LogService.write('Logo: $fileName $transparentCount/${rgba.width * rgba.height} 像素透明化');
     return Uint8List.fromList(img.encodePng(rgba));
   }
-
-  // ==================== 辅助方法：提取背景色 ====================
 
   _RgbColor _getBackgroundColor(img.Image image) {
     final w = image.width;
@@ -434,13 +406,11 @@ class LogoService {
       samples.add([p.r.toInt(), p.g.toInt(), p.b.toInt()]);
     }
 
-    // 四角
     addSample(0, 0);
     addSample(w - 1, 0);
     addSample(0, h - 1);
     addSample(w - 1, h - 1);
 
-    // 边缘采样
     final stepX = max(1, w ~/ 20);
     final stepY = max(1, h ~/ 20);
     for (int x = 0; x < w; x += stepX) {
@@ -452,10 +422,9 @@ class LogoService {
       addSample(w - 1, y);
     }
 
-    // 统计出现次数最多的颜色
     final counter = <String, int>{};
     for (final color in samples) {
-      final key = '\${color[0]},\${color[1]},\${color[2]}';
+      final key = '${color[0]},${color[1]},${color[2]}';
       counter[key] = (counter[key] ?? 0) + 1;
     }
 
@@ -480,8 +449,6 @@ class LogoService {
     );
   }
 
-  // ==================== 工具方法 ====================
-
   String _sanitizeFileName(String name) {
     return name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
   }
@@ -498,11 +465,11 @@ class LogoService {
       LogService.write('Logo: 加载 epg_data.json 名称映射...');
       _nameToEpgId = await EpgParser.getNameToEpgId();
       _nameMapLoaded = true;
-      LogService.write('Logo: 名称映射加载完成，共 \${_nameToEpgId?.length ?? 0} 条');
+      LogService.write('Logo: 名称映射加载完成，共 ${_nameToEpgId?.length ?? 0} 条');
     }
     final id = _nameToEpgId?[channelName];
     if (id == null) {
-      LogService.write('Logo: 未找到映射: \$channelName');
+      LogService.write('Logo: 未找到映射: $channelName');
     }
     return id;
   }
