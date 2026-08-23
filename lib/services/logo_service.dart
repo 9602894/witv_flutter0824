@@ -408,14 +408,15 @@ class LogoService {
 
     LogService.write('Logo: $fileName $transparentCount/${rgba.width * rgba.height} 像素透明化');
 
-    // ========== 验证：重新加载检查 Alpha 通道 ==========
+    // ========== 验证：重新加载检查 Alpha 通道（使用局部变量避免空安全推断问题） ==========
     final encoded = Uint8List.fromList(img.encodePng(rgba));
     final verify = img.decodePng(encoded);
-    if (verify != null) {
+    final v = verify;
+    if (v != null) {
       int verifyTransparent = 0;
-      for (int y = 0; y < verify.height; y++) {
-        for (int x = 0; x < verify.width; x++) {
-          if (verify.getPixel(x, y).a.toInt() == 0) verifyTransparent++;
+      for (int y = 0; y < v.height; y++) {
+        for (int x = 0; x < v.width; x++) {
+          if (v.getPixel(x, y).a.toInt() == 0) verifyTransparent++;
         }
       }
       LogService.write('Logo: $fileName 验证通过，透明像素 $verifyTransparent');
