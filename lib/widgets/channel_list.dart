@@ -27,11 +27,17 @@ class ChannelLogo extends StatefulWidget {
 
 class _ChannelLogoState extends State<ChannelLogo> {
   Uint8List? _logoBytes;
+  VoidCallback? _logoListener;
 
   @override
   void initState() {
     super.initState();
     _load();
+    _logoListener = () {
+      // 任意台标下载完成时刷新当前台标
+      if (mounted) _load();
+    };
+    LogoService().logoUpdateNotifier.addListener(_logoListener!);
   }
 
   @override
@@ -41,6 +47,14 @@ class _ChannelLogoState extends State<ChannelLogo> {
       if (mounted) setState(() => _logoBytes = null);
       _load();
     }
+  }
+
+  @override
+  void dispose() {
+    if (_logoListener != null) {
+      LogoService().logoUpdateNotifier.removeListener(_logoListener!);
+    }
+    super.dispose();
   }
 
   Future<void> _load() async {
