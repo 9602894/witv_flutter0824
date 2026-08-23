@@ -35,7 +35,7 @@ class _HomeScreenState extends State<HomeScreen> {
   // ---------- 窗口状态 ----------
   bool showChannelList = false;
   bool isScheduleMode = false;
-  bool _showEpgInfo = false;
+  bool _showEpgInfo = false;          // 中下框显示状态
   bool isEditMode = false;
   bool _showRightMenu = false;
 
@@ -57,8 +57,12 @@ class _HomeScreenState extends State<HomeScreen> {
   // ---------- EPG ----------
   EpgProgram? _currentProgram;
   EpgProgram? _nextProgram;
-  String? _channelLogoUrl;   // 当前频道台标
   bool _isEpgUpdating = false;
+
+  // ---------- 定时器 ----------
+  Timer? _epgInfoHideTimer;           // 中下框自动隐藏
+  Timer? _epgUpdateTimer;
+  Timer? _epgInfoTimer;
 
   // ---------- 订阅 ----------
   Map<String, List<Channel>>? _fullGroupMap;
@@ -68,8 +72,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // ---------- 配置 ----------
   late File _layoutConfigFile;
-  Timer? _epgUpdateTimer;
-  Timer? _epgInfoTimer;
   final LogoService _logoService = LogoService();
 
   // ---------- 播放器重连 ----------
@@ -106,6 +108,7 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _initAsync();
 
+    // EPG 更新监听
     _epgListener = () {
       if (!mounted) return;
       _updateEpgInfo();
@@ -227,6 +230,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    _epgInfoHideTimer?.cancel();
     if (_epgListener != null) {
       EpgParser.epgUpdateCounter.removeListener(_epgListener!);
     }
@@ -276,13 +280,10 @@ class _HomeScreenState extends State<HomeScreen> {
     if (currentChannel == null) return;
     final current = await _getCurrentProgram(currentChannel!.name);
     final next = await _getNextProgram(currentChannel!.name);
-    // 获取台标
-    final logo = await EpgParser.getChannelIcon(currentChannel!.name);
     if (mounted) {
       setState(() {
         _currentProgram = current;
         _nextProgram = next;
-        _channelLogoUrl = logo;
       });
     }
   }
@@ -323,18 +324,28 @@ class _HomeScreenState extends State<HomeScreen> {
     _retryChannel = null;
   }
 
-  // ========== 频道切换 ==========
+  // ========== 频道切换（换台） ==========
   void _switchChannel(Channel ch) {
     _cancelRetry();
     _digitBuffer = '';
     _digitTimer?.cancel();
+
     setState(() {
       currentChannel = ch;
-      _showEpgInfo = true;
       _selectedIndex = channels.indexOf(ch);
+      _showEpgInfo = true;           // 切换时显示中下框
+      _updateEpgInfo();
     });
+
+    // 启动5秒自动隐藏
+    _epgInfoHideTimer?.cancel();
+    _epgInfoHideTimer = Timer(const Duration(seconds: 5), () {
+      if (mounted) {
+        setState(() => _showEpgInfo = false);
+      }
+    });
+
     Provider.of<SettingsService>(context, listen: false).saveLastChannel(ch.name);
-    _updateEpgInfo();
   }
 
   // ========== 分组切换 ==========
@@ -467,7 +478,9 @@ class _HomeScreenState extends State<HomeScreen> {
               currentChannel = channels.first;
               _selectedIndex = 0;
             }
+            // 切换频道后显示中下框
             _showEpgInfo = true;
+            _updateEpgInfo();
           } else if (currentChannel != null && channels.contains(currentChannel)) {
             _selectedIndex = channels.indexOf(currentChannel!);
           } else {
@@ -563,31 +576,35 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ============================================================
-  // 新增：底部 EPG 信息框（修改 1.1）
+  // 中下框信息条（修改 1.7）
   // ============================================================
-  Widget _buildEpgInfo() {
+  Widget _buildEpgInfoBar() {
     final current = _currentProgram;
     final next = _nextProgram;
+    final logoUrl = currentChannel != null
+        ? EpgParser.getChannelIconSync(currentChannel!.name)
+        : null;
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      decoration: BoxDecoration(
-        color: Colors.black.withOpacity(0.75),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // 台标：透明背景
-          Container(
-            width: 80,
-            height: 50,
-            color: Colors.transparent,
-            child: _channelLogoUrl != null && _channelLogoUrl!.isNotEmpty
-                ? Image.network(
-                    _channelLogoUrl!,
-                    width: 80,
-                    height: 50,
+      color: Colors.black.withOpacity(0.5),   // 半透明背景
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      child: SafeArea(
+        top: false,
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // 台标（透明背景）
+            if (logoUrl != null && logoUrl.isNotEmpty)
+              ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: Container(
+                  width: 70,
+                  height: 45,
+                  color: Colors.transparent,
+                  child: Image.network(
+                    logoUrl,
+                    width: 70,
+                    height: 45,
                     fit: BoxFit.contain,
                     loadingBuilder: (context, child, loadingProgress) {
                       if (loadingProgress == null) return child;
@@ -596,81 +613,102 @@ class _HomeScreenState extends State<HomeScreen> {
                     errorBuilder: (context, error, stackTrace) {
                       return Container(color: Colors.transparent);
                     },
-                  )
-                : Container(color: Colors.transparent),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                // 频道名称
-                Text(
-                  currentChannel?.name ?? '',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
                   ),
                 ),
-                const SizedBox(height: 6),
-                // 正在播放（东八区时间）
-                if (current != null)
+              )
+            else
+              const SizedBox(width: 70, height: 45),
+
+            const SizedBox(width: 12),
+
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // 频道名
                   Text(
-                    '正在播放：${EpgParser.formatBeijingTime(current.start)} - ${EpgParser.formatBeijingTime(current.stop)}  ${current.title}',
-                    style: const TextStyle(color: Colors.white, fontSize: 13),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
+                    currentChannel?.name ?? '',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
-                // desc 详细信息（最多两行）
-                if (current?.description?.isNotEmpty == true)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 2),
-                    child: Text(
-                      current!.description!,
-                      style: const TextStyle(color: Colors.white70, fontSize: 12),
-                      maxLines: 2,
+                  const SizedBox(height: 4),
+
+                  // 正在播放（东八区）
+                  if (current != null)
+                    Text(
+                      '正在播放：${EpgParser.formatBeijingTime(current.start)} - ${EpgParser.formatBeijingTime(current.stop)}  ${current.title}',
+                      style: const TextStyle(color: Colors.white, fontSize: 13),
+                      maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
-                  )
-                else
-                  Padding(
-                    padding: const EdgeInsets.only(top: 2),
-                    child: Text(
-                      '暂无描述信息',
-                      style: const TextStyle(color: Colors.white54, fontSize: 12),
+
+                  // desc 全部显示（不限制行数）
+                  if (current?.description?.isNotEmpty == true)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Text(
+                        current!.description!,
+                        style: const TextStyle(color: Colors.white70, fontSize: 12),
+                      ),
+                    )
+                  else
+                    const Padding(
+                      padding: EdgeInsets.only(top: 2),
+                      child: Text(
+                        '暂无描述信息',
+                        style: TextStyle(color: Colors.white54, fontSize: 12),
+                      ),
                     ),
-                  ),
-                const SizedBox(height: 4),
-                // 下一节目（东八区时间）
-                if (next != null)
-                  Text(
-                    '下一节目：${EpgParser.formatBeijingTime(next.start)} - ${EpgParser.formatBeijingTime(next.stop)}  ${next.title}',
-                    style: const TextStyle(color: Colors.white70, fontSize: 12),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-              ],
+
+                  const SizedBox(height: 4),
+
+                  // 下一节目（东八区）
+                  if (next != null)
+                    Text(
+                      '下一节目：${EpgParser.formatBeijingTime(next.start)} - ${EpgParser.formatBeijingTime(next.stop)}  ${next.title}',
+                      style: const TextStyle(color: Colors.white70, fontSize: 12),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                ],
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
 
   // ============================================================
-  // 新增：频道列表项（修改 1.3）
+  // 频道列表项（左边台标 + 当前 EPG）
   // ============================================================
   Widget _buildChannelItem(Channel channel, int index) {
-    // 同步获取当前节目（O(1)，不阻塞 UI）
     final currentEpg = EpgParser.getCurrentProgramSync(channel.name);
+    final logoUrl = EpgParser.getChannelIconSync(channel.name);
     final isSelected = currentChannel?.name == channel.name;
 
     return ListTile(
       dense: true,
       selected: isSelected,
       selectedTileColor: Colors.white.withOpacity(0.1),
+      leading: logoUrl != null && logoUrl.isNotEmpty
+          ? Container(
+              width: 36,
+              height: 24,
+              color: Colors.transparent,
+              child: Image.network(
+                logoUrl,
+                width: 36,
+                height: 24,
+                fit: BoxFit.contain,
+                errorBuilder: (_, __, ___) => const SizedBox(width: 36, height: 24),
+              ),
+            )
+          : const SizedBox(width: 36, height: 24),
       title: Text(
         channel.name,
         style: TextStyle(
@@ -679,7 +717,6 @@ class _HomeScreenState extends State<HomeScreen> {
           fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
         ),
       ),
-      // 频道名称下方显示当前 EPG
       subtitle: currentEpg != null
           ? Text(
               '${EpgParser.formatBeijingTime(currentEpg.start)}-${EpgParser.formatBeijingTime(currentEpg.stop)} ${currentEpg.title}',
@@ -692,14 +729,9 @@ class _HomeScreenState extends State<HomeScreen> {
             )
           : Text(
               '暂无节目信息',
-              style: TextStyle(
-                color: Colors.white38,
-                fontSize: 11,
-              ),
+              style: TextStyle(color: Colors.white38, fontSize: 11),
             ),
-      onTap: () {
-        _switchChannel(channel);
-      },
+      onTap: () => _switchChannel(channel),
     );
   }
 
@@ -722,6 +754,7 @@ class _HomeScreenState extends State<HomeScreen> {
       onKey: _handleKeyEvent,
       child: WillPopScope(
         onWillPop: () async {
+          // 返回键优先关闭中下框
           if (_showEpgInfo) {
             setState(() => _showEpgInfo = false);
             return false;
@@ -755,7 +788,7 @@ class _HomeScreenState extends State<HomeScreen> {
         child: Scaffold(
           body: Stack(
             children: [
-              // 播放器
+              // ---------- 播放器 ----------
               if (currentChannel != null && currentChannel!.url.isNotEmpty)
                 Positioned.fill(
                   child: IjkPlayerWidget(
@@ -769,7 +802,25 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
 
-              // 左侧点击区域
+              // ---------- 点击播放器区域弹出中下框 ----------
+              if (!_showEpgInfo)
+                Positioned.fill(
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.translucent,
+                    onTap: () {
+                      setState(() {
+                        _showEpgInfo = true;
+                        _updateEpgInfo();
+                      });
+                      _epgInfoHideTimer?.cancel();
+                      _epgInfoHideTimer = Timer(const Duration(seconds: 5), () {
+                        if (mounted) setState(() => _showEpgInfo = false);
+                      });
+                    },
+                  ),
+                ),
+
+              // ---------- 左侧点击区域（切换列表） ----------
               Positioned(
                 left: 0, top: 0, bottom: 0, width: 40,
                 child: GestureDetector(
@@ -784,7 +835,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       }
                       if (showChannelList) {
                         _showRightMenu = false;
-                        _showEpgInfo = false;
+                        _showEpgInfo = false;  // 列表显示时隐藏中下框
                         _focusNode.requestFocus();
                       }
                     });
@@ -793,7 +844,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
 
-              // 频道列表模式（替换原 ChannelList 为自定义列表）
+              // ---------- 频道列表模式 ----------
               if (showChannelList && !isScheduleMode)
                 Positioned(
                   left: 0, top: 0, bottom: 0,
@@ -882,7 +933,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
 
-              // 节目单模式（同样替换 ChannelList）
+              // ---------- 节目单模式 ----------
               if (isScheduleMode)
                 Positioned(
                   left: 0, top: 0, bottom: 0,
@@ -983,22 +1034,16 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
 
-              // EPG 信息浮窗（使用新的 _buildEpgInfo）
-              if (_showEpgInfo && currentChannel != null)
+              // ---------- 中下框 EPG 信息 ----------
+              if (_showEpgInfo)
                 Positioned(
-                  left: 0, right: 0,
-                  bottom: MediaQuery.of(context).size.height * 0.15,
-                  child: Center(
-                    child: Container(
-                      constraints: const BoxConstraints(maxWidth: 500),
-                      padding: const EdgeInsets.all(16),
-                      decoration: const BoxDecoration(color: Colors.transparent),
-                      child: _buildEpgInfo(),
-                    ),
-                  ),
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  child: _buildEpgInfoBar(),
                 ),
 
-              // 右侧菜单
+              // ---------- 右侧菜单 ----------
               if (_showRightMenu)
                 Positioned(
                   top: 0, right: 0, bottom: 0,
@@ -1037,7 +1082,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
 
-              // 顶部工具栏
+              // ---------- 顶部工具栏 ----------
               Positioned(
                 top: 0, right: 0,
                 child: Row(
