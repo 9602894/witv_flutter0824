@@ -90,7 +90,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Timer? _digitTimer;
 
   // ---------- 自动加载标记 ----------
-  VoidCallback? _epgListener;   // EPG 更新监听器
+  VoidCallback? _epgListener;
   bool _autoLoaded = false;
 
   // ============================================================
@@ -115,7 +115,6 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _initAsync();
 
-    // EPG 更新后自动刷新当前频道信息
     _epgListener = () {
       if (!mounted) return;
       _updateEpgInfo();
@@ -124,13 +123,11 @@ class _HomeScreenState extends State<HomeScreen> {
     EpgParser.epgUpdateCounter.addListener(_epgListener!);
   }
 
-  // FIX: 启动时直接加载 EPG（后台，不阻塞）
   Future<void> _initAsync() async {
     LogService.write('主页初始化');
     await _initLayoutConfigFile();
     await _loadLayoutConfig();
 
-    // 检查Logo配置，未配置则设置默认GitHub源
     final logoSources = await _logoService.getEnabledSources();
     LogService.write('Logo: 已配置来源 ${logoSources.length} 个: ${logoSources.map((s) => s.name).join(', ')}');
     final hasLogoSource = await _logoService.hasConfiguredSource();
@@ -139,21 +136,17 @@ class _HomeScreenState extends State<HomeScreen> {
       await _logoService.setEnabledSources([LogoSource.github]);
     }
 
-    // 启动EPG调度器（定时更新）
     _initEpgScheduler();
     _startEpgInfoTimer();
 
-    // FIX: 后台加载 EPG，不阻塞启动和播放
     _loadEpgInBackground();
 
     if (mounted) setState(() => isLoading = false);
   }
 
-  // 新增：后台加载 EPG
   void _loadEpgInBackground() {
     EpgParser.init().then((_) async {
       LogService.write('EPG: 后台加载完成');
-      // EPG 加载完成后，刷新当前频道的节目信息
       if (currentChannel != null && mounted) {
         await _updateEpgInfo();
       }
@@ -245,7 +238,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
-    // 移除 EPG 更新监听
     if (_epgListener != null) {
       EpgParser.epgUpdateCounter.removeListener(_epgListener!);
     }
@@ -445,7 +437,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // ========== 应用分组映射（已删除 _loadAllEpg 调用） ==========
+  // ========== 应用分组映射 ==========
 
   void _applyGroupMap(Map<String, List<Channel>> groupMap, String subName) {
     if (groupMap.isEmpty) return;
@@ -511,7 +503,6 @@ class _HomeScreenState extends State<HomeScreen> {
       currentSubName = subName;
     });
 
-    // 已删除 _loadAllEpg() 调用
     if (currentChannel != null) {
       _updateEpgInfo();
     }
@@ -588,7 +579,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // ========== EPG 信息浮窗构建 ==========
+  // ========== EPG 信息浮窗构建（修改：增加 description 显示） ==========
 
   Widget _buildEpgInfoWithLogo() {
     final channel = currentChannel;
@@ -646,6 +637,21 @@ class _HomeScreenState extends State<HomeScreen> {
                       shadows: [Shadow(blurRadius: 4, color: Colors.black)],
                     ),
                   ),
+                  // ===== 新增：显示 desc 详细信息 =====
+                  if (current.description != null && current.description!.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Text(
+                        current.description!,
+                        style: const TextStyle(
+                          color: Colors.white70,
+                          fontSize: 12,
+                          shadows: [Shadow(blurRadius: 4, color: Colors.black)],
+                        ),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
                   const SizedBox(height: 4),
                   LinearProgressIndicator(
                     value: progress,
@@ -703,6 +709,17 @@ class _HomeScreenState extends State<HomeScreen> {
       final idx = channels.indexOf(currentChannel!);
       if (idx != _selectedIndex && idx >= 0) {
         _selectedIndex = idx;
+      }
+    }
+
+    // ===== 新增：构建当前频道 EPG 映射（每个频道只取当前节目，同步不阻塞） =====
+    Map<String, List<EpgProgram>> currentEpgMap = {};
+    if (channels.isNotEmpty) {
+      for (var ch in channels) {
+        final prog = EpgParser.getCurrentProgramSync(ch.name);
+        if (prog != null) {
+          currentEpgMap[ch.name] = [prog];
+        }
       }
     }
 
@@ -836,7 +853,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                   channels: channels,
                                   selectedChannel: currentChannel,
                                   onSelect: _switchChannel,
-                                  epgMap: const {},
+                                  epgMap: currentEpgMap,  // ← 传入当前节目映射
                                   showChannelNumber: false,
                                   showLogo: true,
                                   currentEpgProgram: _currentEpgProgram,
@@ -909,7 +926,7 @@ class _HomeScreenState extends State<HomeScreen> {
                               channels: channels,
                               selectedChannel: currentChannel,
                               onSelect: _switchChannel,
-                              epgMap: const {},
+                              epgMap: currentEpgMap,  // ← 传入当前节目映射
                               showChannelNumber: false,
                               showLogo: true,
                               currentEpgProgram: _currentEpgProgram,
