@@ -1,3 +1,4 @@
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import '../models/channel.dart';
 import '../models/epg_program.dart';
@@ -50,11 +51,15 @@ class _ScheduleViewState extends State<ScheduleView> {
   DateTime? _selectedDate;
   List<DateTime> _availableDates = [];
 
+  // 台标字节
+  Uint8List? _logoBytes;
+
   @override
   void initState() {
     super.initState();
     _selectedChannel = widget.selectedChannel;
     _loadPrograms();
+    _loadLogo();
 
     _epgListener = () {
       if (mounted) _loadPrograms();
@@ -68,6 +73,22 @@ class _ScheduleViewState extends State<ScheduleView> {
     if (widget.selectedChannel != oldWidget.selectedChannel) {
       _selectedChannel = widget.selectedChannel;
       _loadPrograms();
+      _loadLogo();
+    }
+  }
+
+  // 加载台标（使用 LogoService）
+  Future<void> _loadLogo() async {
+    if (_selectedChannel == null) {
+      if (mounted) setState(() => _logoBytes = null);
+      return;
+    }
+    final file = await widget.logoService.getLogo(_selectedChannel!.name);
+    if (file != null && file.existsSync()) {
+      final bytes = await file.readAsBytes();
+      if (mounted) setState(() => _logoBytes = bytes);
+    } else {
+      if (mounted) setState(() => _logoBytes = null);
     }
   }
 
@@ -162,20 +183,20 @@ class _ScheduleViewState extends State<ScheduleView> {
             ),
           ),
 
-        // ---------- 频道标题（带台标） ----------
+        // ---------- 频道标题（带台标，使用 LogoService） ----------
         if (_selectedChannel != null)
           Container(
             padding: const EdgeInsets.all(12),
             child: Row(
               children: [
-                // 台标
-                if (EpgParser.getChannelIconSync(_selectedChannel!.name) != null)
+                // 台标（使用 LogoService 加载的本地图片）
+                if (_logoBytes != null)
                   Container(
                     width: 50,
                     height: 30,
                     color: Colors.transparent,
-                    child: Image.network(
-                      EpgParser.getChannelIconSync(_selectedChannel!.name)!,
+                    child: Image.memory(
+                      _logoBytes!,
                       fit: BoxFit.contain,
                       errorBuilder: (_, __, ___) => const SizedBox(),
                     ),
