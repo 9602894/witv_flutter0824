@@ -7,7 +7,7 @@ import '../services/logo_service.dart';
 class ScheduleView extends StatefulWidget {
   final List<Channel> channels;
   final Channel? selectedChannel;
-  final Map<String, List<EpgProgram>> epgMap; // 废弃
+  final Map<String, List<EpgProgram>> epgMap;
   final ValueChanged<Channel> onSelectChannel;
   final double leftWeight;
   final double rightWeight;
@@ -97,98 +97,119 @@ class _ScheduleViewState extends State<ScheduleView> {
     super.dispose();
   }
 
+  // ============================================================
+  // 修改 2.1：按日期分组 + 当前高亮 + desc 显示
+  // ============================================================
   @override
   Widget build(BuildContext context) {
-    final now = widget.beijingNow ?? EpgParser.beijingNow;
+    if (_isLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
 
-    return Column(
-      children: [
-        // 频道信息头
-        if (_selectedChannel != null)
-          Container(
-            padding: const EdgeInsets.all(8),
-            child: Row(
-              children: [
-                FutureBuilder<String?>(
-                  future: EpgParser.getChannelIcon(_selectedChannel!.name),
-                  builder: (_, snapshot) {
-                    final icon = snapshot.data;
-                    if (icon != null && icon.isNotEmpty) {
-                      return Image.network(icon, width: 32, height: 32,
-                        errorBuilder: (_, __, ___) => const Icon(Icons.tv, color: Colors.white));
+    if (_programs.isEmpty) {
+      return const Center(
+        child: Text('暂无节目信息', style: TextStyle(color: Colors.white70)),
+      );
+    }
+
+    // 按日期分组（东八区日期）
+    final grouped = <DateTime, List<EpgProgram>>{};
+    for (final program in _programs) {
+      final date = EpgParser.beijingDate(program.start);
+      grouped.putIfAbsent(date, () => []).add(program);
+    }
+
+    final sortedDates = grouped.keys.toList()..sort();
+    final now = EpgParser.beijingNow;
+
+    return ListView.builder(
+      itemCount: sortedDates.length,
+      itemBuilder: (context, dateIndex) {
+        final date = sortedDates[dateIndex];
+        final datePrograms = grouped[date]!;
+        final dateStr = '${date.month}月${date.day}日';
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // 日期标题
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              color: Colors.white.withOpacity(0.05),
+              child: Text(
+                dateStr,
+                style: const TextStyle(
+                  color: Colors.white70,
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+            // 该日期的节目列表
+            ...datePrograms.map((program) {
+              final isCurrent = program.start.isBefore(now) && program.stop.isAfter(now);
+              final isPast = program.stop.isBefore(now);
+
+              return Container(
+                color: isCurrent ? Colors.yellow.withOpacity(0.15) : Colors.transparent,
+                child: ListTile(
+                  dense: true,
+                  leading: Text(
+                    EpgParser.formatBeijingTime(program.start),
+                    style: TextStyle(
+                      color: isCurrent ? Colors.yellow : (isPast ? Colors.white38 : Colors.white70),
+                      fontSize: 13,
+                      fontWeight: isCurrent ? FontWeight.bold : FontWeight.normal,
+                    ),
+                  ),
+                  title: Text(
+                    program.title,
+                    style: TextStyle(
+                      color: isCurrent ? Colors.yellow : (isPast ? Colors.white38 : Colors.white),
+                      fontSize: 14,
+                      fontWeight: isCurrent ? FontWeight.bold : FontWeight.normal,
+                    ),
+                  ),
+                  // desc 显示
+                  subtitle: program.description.isNotEmpty
+                      ? Text(
+                          program.description,
+                          style: TextStyle(
+                            color: isCurrent ? Colors.yellow.withOpacity(0.7) : Colors.white54,
+                            fontSize: 12,
+                          ),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        )
+                      : null,
+                  trailing: isCurrent
+                      ? Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.yellow,
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: const Text(
+                            '正在播放',
+                            style: TextStyle(
+                              color: Colors.black,
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        )
+                      : null,
+                  onTap: () {
+                    if (_selectedChannel != null) {
+                      widget.onSelectChannel(_selectedChannel!);
                     }
-                    return const Icon(Icons.tv, color: Colors.white);
                   },
                 ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    _selectedChannel!.name,
-                    style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
-                  ),
-                ),
-              ],
-            ),
-          ),
-
-        // 节目列表
-        Expanded(
-          child: _isLoading
-              ? const Center(child: CircularProgressIndicator())
-              : _programs.isEmpty
-                  ? const Center(child: Text('暂无节目信息', style: TextStyle(color: Colors.white70)))
-                  : ListView.builder(
-                      itemCount: _programs.length,
-                      itemBuilder: (context, index) {
-                        final program = _programs[index];
-                        final isCurrent = program.start.isBefore(now) && program.stop.isAfter(now);
-                        final isPast = program.stop.isBefore(now);
-
-                        final fmt = widget.formatTime ?? EpgParser.formatBeijingTime;
-
-                        return ListTile(
-                          dense: true,
-                          leading: Text(
-                            '${fmt(program.start)}',
-                            style: TextStyle(
-                              color: isCurrent ? Colors.green : (isPast ? Colors.white38 : Colors.white),
-                              fontWeight: isCurrent ? FontWeight.bold : FontWeight.normal,
-                              fontSize: 12,
-                            ),
-                          ),
-                          title: Text(
-                            program.title,
-                            style: TextStyle(
-                              color: isCurrent ? Colors.green : (isPast ? Colors.white38 : Colors.white),
-                              fontWeight: isCurrent ? FontWeight.bold : FontWeight.normal,
-                              fontSize: 14,
-                            ),
-                          ),
-                          // ===== 显示节目描述（已存在） =====
-                          subtitle: program.description.isNotEmpty
-                              ? Text(program.description,
-                                  style: TextStyle(color: isPast ? Colors.white24 : Colors.white60, fontSize: 11),
-                                  maxLines: 2, overflow: TextOverflow.ellipsis)
-                              : null,
-                          trailing: isCurrent
-                              ? Container(
-                                  width: 8, height: 8,
-                                  decoration: const BoxDecoration(
-                                    color: Colors.green,
-                                    shape: BoxShape.circle,
-                                  ),
-                                )
-                              : null,
-                          onTap: () {
-                            if (_selectedChannel != null) {
-                              widget.onSelectChannel(_selectedChannel!);
-                            }
-                          },
-                        );
-                      },
-                    ),
-        ),
-      ],
+              );
+            }).toList(),
+          ],
+        );
+      },
     );
   }
 }
