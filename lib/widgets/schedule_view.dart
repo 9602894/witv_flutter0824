@@ -43,10 +43,8 @@ class ScheduleView extends StatefulWidget {
 class _ScheduleViewState extends State<ScheduleView> {
   Channel? _selectedChannel;
   List<EpgProgram> _programs = [];
+  VoidCallback? _epgListener;   // 新增字段
   bool _isLoading = false;
-
-  // EPG 更新监听（ValueNotifier 方式）
-  VoidCallback? _epgListener;   // 替换原来的 StreamSubscription
 
   @override
   void initState() {
@@ -95,6 +93,7 @@ class _ScheduleViewState extends State<ScheduleView> {
 
   @override
   void dispose() {
+    // 移除 EPG 更新监听
     if (_epgListener != null) {
       EpgParser.epgUpdateCounter.removeListener(_epgListener!);
     }
