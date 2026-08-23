@@ -2,11 +2,9 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/painting.dart';
-import 'package:image/image.dart' as img;
 import '../models/channel.dart';
 import '../models/epg_program.dart';
 import '../services/logo_service.dart';
-import '../services/log_service.dart';
 
 class _ChannelLogo extends StatefulWidget {
   final String channelName;
@@ -19,7 +17,6 @@ class _ChannelLogo extends StatefulWidget {
 
 class _ChannelLogoState extends State<_ChannelLogo> {
   Uint8List? _logoBytes;
-  String? _lastChannel;
 
   @override
   void initState() {
@@ -44,21 +41,7 @@ class _ChannelLogoState extends State<_ChannelLogo> {
     );
     if (mounted && file != null && file.existsSync()) {
       final bytes = await file.readAsBytes();
-      // 验证透明像素（调试用）
-      final decoded = img.decodePng(bytes);
-      if (decoded != null) {
-        int transparentPixels = 0;
-        for (int y = 0; y < decoded.height; y++) {
-          for (int x = 0; x < decoded.width; x++) {
-            if (decoded.getPixel(x, y).a.toInt() == 0) transparentPixels++;
-          }
-        }
-        LogService.write('ChannelLogo: ${widget.channelName} 文件 ${file.path} 透明像素 $transparentPixels/${decoded.width * decoded.height}');
-      }
-      setState(() {
-        _logoBytes = bytes;
-        _lastChannel = widget.channelName;
-      });
+      setState(() => _logoBytes = bytes);
     }
   }
 
@@ -67,7 +50,6 @@ class _ChannelLogoState extends State<_ChannelLogo> {
     if (_logoBytes != null && _logoBytes!.isNotEmpty) {
       return Image.memory(
         _logoBytes!,
-        key: ValueKey('${_lastChannel}_${_logoBytes!.length}'),
         width: 32,
         height: 32,
         gaplessPlayback: true,
