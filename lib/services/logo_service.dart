@@ -279,21 +279,21 @@ class LogoService {
           imageBytes = await _fetchBytes(url, headers: headers);
           break;
         case LogoSource.epg:
-          // 1. 通过频道名获取 epgid（即 display-name）
+          // 1. 频道名称 -> epg_data.json 获取 epgid（即 display-name）
           final epgId = await _getEpgId(channelName);
           if (epgId == null) {
-            LogService.write('Logo: $channelName 无 epgid 映射，跳过 EPG 来源');
+            LogService.write('Logo: $channelName 未在 epg_data.json 中找到映射，跳过 EPG 来源');
             break;
           }
 
-          // 2. 用 epgid（display-name）找 channel id
+          // 2. epgid（display-name）-> EPG XML 中查找对应的 channel id
           final channelId = EpgParser.getChannelIdByDisplayNameSync(epgId);
           if (channelId == null) {
-            LogService.write('Logo: $channelName epgid=$epgId 未找到对应 channel id');
+            LogService.write('Logo: $channelName epgid=$epgId 在 EPG 中未找到对应 channel id（EPG可能尚未加载）');
             break;
           }
 
-          // 3. 用 channel id 找 icon
+          // 3. channel id -> EPG XML 中查找 icon 链接
           final iconUrl = EpgParser.getIconUrlByChannelIdSync(channelId);
           if (iconUrl != null && iconUrl.isNotEmpty) {
             sourceDesc = 'EPG';
