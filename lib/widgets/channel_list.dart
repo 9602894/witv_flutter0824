@@ -1,9 +1,12 @@
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
-import 'package:flutter/painting.dart'; // 需要导入 PaintingBinding
+import 'package:flutter/painting.dart';
+import 'package:image/image.dart' as img;
 import '../models/channel.dart';
 import '../models/epg_program.dart';
 import '../services/logo_service.dart';
+import '../services/log_service.dart';
 
 class _ChannelLogo extends StatefulWidget {
   final String channelName;
@@ -15,7 +18,8 @@ class _ChannelLogo extends StatefulWidget {
 }
 
 class _ChannelLogoState extends State<_ChannelLogo> {
-  File? _logoFile;
+  Uint8List? _logoBytes;
+  String? _lastChannel;
 
   @override
   void initState() {
@@ -27,34 +31,49 @@ class _ChannelLogoState extends State<_ChannelLogo> {
   void didUpdateWidget(_ChannelLogo oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.channelName != widget.channelName) {
-      if (mounted) setState(() => _logoFile = null);
+      if (mounted) setState(() => _logoBytes = null);
       _load();
     }
   }
 
   Future<void> _load() async {
     final service = LogoService();
-    final file = await service.getLogo(widget.channelName, fallbackUrl: widget.fallbackUrl);
+    final file = await service.getLogo(
+      widget.channelName,
+      fallbackUrl: widget.fallbackUrl,
+    );
     if (mounted && file != null && file.existsSync()) {
-      // 强制清除 Flutter 图片缓存，确保刷新
-      PaintingBinding.instance.imageCache.evict(FileImage(file));
-      setState(() => _logoFile = file);
+      final bytes = await file.readAsBytes();
+      // 验证透明像素（调试用）
+      final decoded = img.decodePng(bytes);
+      if (decoded != null) {
+        int transparentPixels = 0;
+        for (int y = 0; y < decoded.height; y++) {
+          for (int x = 0; x < decoded.width; x++) {
+            if (decoded.getPixel(x, y).a.toInt() == 0) transparentPixels++;
+          }
+        }
+        LogService.write('ChannelLogo: ${widget.channelName} 文件 ${file.path} 透明像素 $transparentPixels/${decoded.width * decoded.height}');
+      }
+      setState(() {
+        _logoBytes = bytes;
+        _lastChannel = widget.channelName;
+      });
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_logoFile != null && _logoFile!.existsSync()) {
-      return Image.file(
-        _logoFile!,
-        key: ValueKey(_logoFile!.path),
+    if (_logoBytes != null && _logoBytes!.isNotEmpty) {
+      return Image.memory(
+        _logoBytes!,
+        key: ValueKey('${_lastChannel}_${_logoBytes!.length}'),
         width: 32,
         height: 32,
         gaplessPlayback: true,
         errorBuilder: (_, __, ___) => const Icon(Icons.tv, color: Colors.white54, size: 24),
       );
     }
-    // 绝不允许 Image.network 直接显示
     return const Icon(Icons.tv, color: Colors.white54, size: 24);
   }
 }
