@@ -35,10 +35,7 @@ class _ChannelLogoState extends State<_ChannelLogo> {
 
   Future<void> _load() async {
     final service = LogoService();
-    final file = await service.getLogo(
-      widget.channelName,
-      fallbackUrl: widget.fallbackUrl,
-    );
+    final file = await service.getLogo(widget.channelName);
     if (mounted && file != null && file.existsSync()) {
       final bytes = await file.readAsBytes();
       setState(() => _logoBytes = bytes);
