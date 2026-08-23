@@ -80,6 +80,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   VoidCallback? _epgListener;
   bool _autoLoaded = false;
+  bool _logoDownloadTriggered = false;
 
   DateTime get _beijingNow => EpgParser.beijingNow;
   String _formatTime(DateTime time) => EpgParser.formatBeijingTime(time);
@@ -125,6 +126,11 @@ class _HomeScreenState extends State<HomeScreen> {
       if (currentChannel != null && mounted) {
         await _updateEpgInfo();
         _showEpgInfoTemporarily();
+      }
+      // EPG加载完成后，如果频道已加载，触发台标下载
+      if (channels.isNotEmpty && !_logoDownloadTriggered) {
+        _logoDownloadTriggered = true;
+        _logoService.downloadAllLogos(channels);
       }
     }).catchError((e, stack) {
       LogService.writeCrashLog('EPG后台加载失败: $e', stack);
