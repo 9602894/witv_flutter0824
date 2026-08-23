@@ -6,7 +6,8 @@ import '../services/logo_service.dart';
 
 class _ChannelLogo extends StatefulWidget {
   final String channelName;
-  const _ChannelLogo({required this.channelName});
+  final String? fallbackUrl;
+  const _ChannelLogo({required this.channelName, this.fallbackUrl});
 
   @override
   State<_ChannelLogo> createState() => _ChannelLogoState();
@@ -32,10 +33,9 @@ class _ChannelLogoState extends State<_ChannelLogo> {
 
   Future<void> _load() async {
     final service = LogoService();
-    final file = await service.getLogo(widget.channelName);
+    // fallbackUrl 传给 Service，由 Service 下载处理到 logo 文件夹
+    final file = await service.getLogo(widget.channelName, fallbackUrl: widget.fallbackUrl);
     if (mounted && file != null && file.existsSync()) {
-      // 清除 Flutter 图片缓存，强制重新解码
-      PaintingBinding.instance.imageCache.evict(FileImage(file));
       setState(() => _logoFile = file);
     }
   }
@@ -45,13 +45,12 @@ class _ChannelLogoState extends State<_ChannelLogo> {
     if (_logoFile != null && _logoFile!.existsSync()) {
       return Image.file(
         _logoFile!,
-        key: ValueKey(_logoFile!.path),
         width: 32,
         height: 32,
-        gaplessPlayback: true,
         errorBuilder: (_, __, ___) => const Icon(Icons.tv, color: Colors.white54, size: 24),
       );
     }
+    // 不允许直接 Image.network 显示，必须从 logo 文件夹加载
     return const Icon(Icons.tv, color: Colors.white54, size: 24);
   }
 }
@@ -85,7 +84,10 @@ class ChannelList extends StatelessWidget {
         return ListTile(
           dense: true,
           leading: showLogo
-              ? _ChannelLogo(channelName: channel.name)
+              ? _ChannelLogo(
+                  channelName: channel.name,
+                  fallbackUrl: channel.logoUrl,
+                )
               : null,
           title: Text(
             showChannelNumber && channel.number != null
