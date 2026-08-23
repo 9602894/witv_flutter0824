@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/painting.dart'; // 需要导入 PaintingBinding
 import '../models/channel.dart';
 import '../models/epg_program.dart';
 import '../services/logo_service.dart';
@@ -33,9 +34,10 @@ class _ChannelLogoState extends State<_ChannelLogo> {
 
   Future<void> _load() async {
     final service = LogoService();
-    // fallbackUrl 传给 Service，由 Service 下载处理到 logo 文件夹
     final file = await service.getLogo(widget.channelName, fallbackUrl: widget.fallbackUrl);
     if (mounted && file != null && file.existsSync()) {
+      // 强制清除 Flutter 图片缓存，确保刷新
+      PaintingBinding.instance.imageCache.evict(FileImage(file));
       setState(() => _logoFile = file);
     }
   }
@@ -45,12 +47,14 @@ class _ChannelLogoState extends State<_ChannelLogo> {
     if (_logoFile != null && _logoFile!.existsSync()) {
       return Image.file(
         _logoFile!,
+        key: ValueKey(_logoFile!.path),
         width: 32,
         height: 32,
+        gaplessPlayback: true,
         errorBuilder: (_, __, ___) => const Icon(Icons.tv, color: Colors.white54, size: 24),
       );
     }
-    // 不允许直接 Image.network 显示，必须从 logo 文件夹加载
+    // 绝不允许 Image.network 直接显示
     return const Icon(Icons.tv, color: Colors.white54, size: 24);
   }
 }
