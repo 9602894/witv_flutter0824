@@ -10,7 +10,6 @@ import '../models/epg_program.dart';
 import 'log_service.dart';
 import 'config_service.dart';
 
-/// EPG 服务
 class EpgParser {
   static const String _epgUrlKey = 'epg_url';
   static const String _lastEpgUpdateKey = 'last_epg_update';
@@ -24,43 +23,36 @@ class EpgParser {
   static bool _isWorking = false;
   static final ValueNotifier<int> epgUpdateCounter = ValueNotifier(0);
 
-  /// 【强制东八区】获取当前东八区时间（不受设备时区/代理影响）
   static DateTime get beijingNow {
     final utc = DateTime.now().toUtc();
     return utc.add(const Duration(hours: 8));
   }
 
-  /// 将任意时间转为东八区显示时间
   static DateTime toBeijing(DateTime dt) {
     return dt.toUtc().add(const Duration(hours: 8));
   }
 
-  /// 格式化为 HH:mm（东八区）
   static String formatBeijingTime(DateTime dt) {
     final bj = toBeijing(dt);
     return '${bj.hour.toString().padLeft(2, '0')}:${bj.minute.toString().padLeft(2, '0')}';
   }
 
-  /// 格式化为 MM-dd HH:mm（东八区）
   static String formatBeijingDateTime(DateTime dt) {
     final bj = toBeijing(dt);
     return '${bj.month.toString().padLeft(2, '0')}-${bj.day.toString().padLeft(2, '0')} ${bj.hour.toString().padLeft(2, '0')}:${bj.minute.toString().padLeft(2, '0')}';
   }
 
-  /// 获取东八区日期（用于按日期分组）
   static DateTime beijingDate(DateTime dt) {
     final bj = toBeijing(dt);
     return DateTime(bj.year, bj.month, bj.day);
   }
 
-  /// 获取东八区星期几文字
   static String beijingWeekday(DateTime dt) {
     final bj = toBeijing(dt);
     final weekdays = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
     return weekdays[bj.weekday - 1];
   }
 
-  // ========== 主入口 ==========
   static Future<void> init() async {
     LogService.write('EPG: init 开始');
     try {
@@ -288,7 +280,6 @@ class EpgParser {
     return _ExtractResult(programMap, icons, count);
   }
 
-  /// 【修复】EPG 文件已处理为东八区时间，先按东八区构造，再转 UTC 存储
   static DateTime? _parseXmltvTime(String t) {
     try {
       String s = t.trim();
@@ -302,7 +293,6 @@ class EpgParser {
         final minute = int.parse(s.substring(10, 12));
         final second = int.parse(s.substring(12, 14));
 
-        // EPG文件已处理为东八区时间，先按东八区构造，再转UTC
         final bjTime = DateTime.utc(year, month, day, hour, minute, second);
         return bjTime.subtract(const Duration(hours: 8));
       }
@@ -322,7 +312,6 @@ class EpgParser {
     return content.substring(tagEnd + 1, end).trim();
   }
 
-  // ========== 查询接口 ==========
   static Future<List<EpgProgram>> getProgramsByChannelName(String channelName) async {
     if (channelName.isEmpty) return [];
     final epgid = _nameToEpgidMap?[channelName];
