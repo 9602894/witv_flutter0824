@@ -9,32 +9,32 @@ import '../models/epg_program.dart';
 import 'log_service.dart';
 import 'config_service.dart';
 
-/// EPG 服务 - 按需提取版
+/// EPG 服务 - 纯按需读取版（无内存缓存）
 ///
-/// 核心设计：
-/// 1. 从 assets/epg_data.json 读取 name → epgid 映射（epgid 即 XML 里 channel 的 id）
-/// 2. 下载 EPG XML 到临时文件
-/// 3. Isolate 里流式扫描 XML，只提取 epg_data.json 中存在的 channel 的节目
-/// 4. 结果直接存入内存 Map，不生成任何缓存文件
-/// 5. ValueNotifier 通知 UI 刷新
+/// 设计：
+/// 1. epg_data.json 提供 name → epgid（即 XML 中 <display-name>）的映射
+/// 2. 下载 EPG XML 到临时文件，仅存储，不解析
+/// 3. 查询时直接读取 XML，通过 display-name 找到 channel id，再提取节目
+/// 4. 所有查询均在 Isolate 中执行，避免阻塞 UI
 class EpgParser {
   static const String _epgUrlKey = 'epg_url';
   static const String _lastEpgUpdateKey = 'last_epg_update';
   static const String _epgDataJsonAsset = 'assets/epg_data.json';
   static const String _epgTempFile = 'epg_temp.xml';
 
-  // ========== 内存缓存（唯一真相源）==========
-  static Map<String, List<EpgProgram>>? _memoryCache;
-  static Map<String, String>? _iconCache;
-  static Map<String, String>? _nameToEpgidMap;
+  // ========== 映射（唯一保留的内存数据）==========
+  static Map<String, String>? _nameToEpgidMap; // 频道名 → epgid（display-name）
+
+  // ========== 文件路径 ==========
+  static String? _epgFilePath;
 
   // ========== 后台任务锁 ==========
   static bool _isDownloading = false;
 
-  // ========== UI 更新通知 ==========
+  // ========== UI 更新通知（仅用于告知下载完成）==========
   static final ValueNotifier<int> epgUpdateCounter = ValueNotifier(0);
 
-  // ========== 时区工具 ==========
+  // ========== 时区工具（保持不变）==========
   static DateTime get beijingNow {
     return DateTime.now().toUtc().add(const Duration(hours: 8));
   }
@@ -48,24 +48,20 @@ class EpgParser {
     return '${bj.hour.toString().padLeft(2, '0')}:${bj.minute.toString().padLeft(2, '0')}';
   }
 
-  // ========== 主入口：启动时调用，零阻塞 ==========
+  // ========== 主入口 ==========
   static Future<void> init() async {
     LogService.write('EPG: ========== init 开始 ==========');
     try {
-      // 1. 加载 epg_data.json（name → epgid 映射）
       await _loadEpgNameMap();
       LogService.write('EPG: 名称映射 ${_nameToEpgidMap?.length ?? 0} 条');
-
-      // 2. 后台下载+提取（不 await，不阻塞播放）
       _checkAndUpdateInBackground();
-
-      LogService.write('EPG: ========== init 完成（后台提取中） ==========');
+      LogService.write('EPG: ========== init 完成 ==========');
     } catch (e, stack) {
       LogService.writeCrashLog('EPG init 失败: $e', stack);
     }
   }
 
-  // ========== 后台检查更新 ==========
+  // ========== 后台下载（仅下载，不解析）==========
   static void _checkAndUpdateInBackground() async {
     if (_isDownloading) return;
     _isDownloading = true;
@@ -78,7 +74,6 @@ class EpgParser {
       }
       LogService.write('EPG: URL=$url');
 
-      // 检查更新间隔
       final settings = await _loadSettings();
       final lastUpdate = settings[_lastEpgUpdateKey] as int?;
       if (lastUpdate != null) {
@@ -89,7 +84,6 @@ class EpgParser {
         }
       }
 
-      // 1. 下载到临时文件
       final dir = await getApplicationDocumentsDirectory();
       final tempPath = '${dir.path}/$_epgTempFile';
 
@@ -107,41 +101,25 @@ class EpgParser {
       final size = await file.length();
       LogService.write('EPG: 下载完成 ${(size / 1024 / 1024).toStringAsFixed(1)}MB');
 
-      // 2. 准备 neededChannels（epg_data.json 里的 epgid）
-      final neededChannels = _nameToEpgidMap?.values.toSet().toList() ?? [];
-      LogService.write('EPG: 需要提取 ${neededChannels.length} 个频道');
+      // 保存文件路径
+      _epgFilePath = tempPath;
 
-      // 3. 【关键】Isolate 里只提取 needed channels，不解析全部
-      final stopwatch = Stopwatch()..start();
-      final result = await Isolate.run(() => _extractNeededChannels(tempPath, neededChannels));
-      stopwatch.stop();
-
-      LogService.write(
-        'EPG: 提取完成 ${result.programs.length}频道 ${result.count}节目 '
-        '耗时 ${stopwatch.elapsedMilliseconds}ms',
-      );
-
-      // 4. 主线程只做赋值
-      _memoryCache = result.programs;
-      _iconCache = result.icons;
-      epgUpdateCounter.value++;
-      LogService.write('EPG: 内存缓存已更新，UI 收到通知');
-
-      // 5. 更新设置
+      // 更新设置
       settings[_lastEpgUpdateKey] = DateTime.now().millisecondsSinceEpoch;
       await _saveSettings(settings);
 
-      // 6. 清理临时文件
-      try { await file.delete(); } catch (_) {}
+      // 通知 UI
+      epgUpdateCounter.value++;
 
-      LogService.write('EPG: ========== 后台更新完成 ==========');
+      LogService.write('EPG: ========== 后台下载完成 ==========');
     } catch (e, stack) {
-      LogService.writeCrashLog('EPG 后台更新失败: $e', stack);
+      LogService.writeCrashLog('EPG 后台下载失败: $e', stack);
     } finally {
       _isDownloading = false;
     }
   }
 
+  // ========== 强制刷新 ==========
   static Future<void> forceRefresh() async {
     LogService.write('EPG: 强制刷新');
     final settings = await _loadSettings();
@@ -150,88 +128,182 @@ class EpgParser {
     _checkAndUpdateInBackground();
   }
 
-  // ========== Isolate 函数：只提取 needed channels ==========
-  /// 不用 xml 包，split 分块扫描，只保留 epg_data.json 中存在的 channel
+  // ========== 查询接口（直接读 XML，Isolate 执行）==========
+  static Future<List<EpgProgram>> getProgramsByChannelName(String channelName) async {
+    if (channelName.isEmpty) return [];
+    final epgid = _nameToEpgidMap?[channelName];
+    if (epgid == null) return [];
+    final filePath = _epgFilePath;
+    if (filePath == null || !(await File(filePath).exists())) {
+      LogService.write('EPG: XML 文件不存在，返回空');
+      return [];
+    }
+    try {
+      // 在 Isolate 中解析
+      final result = await Isolate.run(() => _extractProgramsForEpgid(filePath, epgid));
+      return result ?? [];
+    } catch (e, stack) {
+      LogService.writeCrashLog('EPG 查询失败: $e', stack);
+      return [];
+    }
+  }
+
+  static Future<EpgProgram?> getCurrentProgram(String channelName) async {
+    final programs = await getProgramsByChannelName(channelName);
+    if (programs.isEmpty) return null;
+    final now = beijingNow;
+    return programs.firstWhereOrNull((p) => p.start.isBefore(now) && p.stop.isAfter(now));
+  }
+
+  static Future<EpgProgram?> getNextProgram(String channelName) async {
+    final programs = await getProgramsByChannelName(channelName);
+    if (programs.isEmpty) return null;
+    final now = beijingNow;
+    return programs.firstWhereOrNull((p) => p.start.isAfter(now));
+  }
+
+  static Future<String?> getChannelIcon(String channelName) async {
+    final epgid = _nameToEpgidMap?[channelName];
+    if (epgid == null) return null;
+    final filePath = _epgFilePath;
+    if (filePath == null || !(await File(filePath).exists())) return null;
+    try {
+      return await Isolate.run(() => _extractIconForEpgid(filePath, epgid));
+    } catch (e) {
+      LogService.write('EPG 获取图标失败: $e');
+      return null;
+    }
+  }
+
+  static Future<String?> getChannelIconUrl(String channelName) => getChannelIcon(channelName);
+
+  static Future<Map<String, String>> getNameToEpgId() async {
+    return _nameToEpgidMap ?? {};
+  }
+
+  static Future<String?> getEpgidByChannelName(String channelName) async {
+    return _nameToEpgidMap?[channelName];
+  }
+
+  // ========== Isolate 解析函数 ==========
+  /// 提取指定 epgid（display-name）的节目列表
   @pragma('vm:entry-point')
-  static _ExtractResult _extractNeededChannels(String filePath, List<String> neededChannels) {
-    final needed = Set<String>.from(neededChannels);
-    final programMap = <String, List<EpgProgram>>{};
-    final icons = <String, String>{};
-    var count = 0;
+  static List<EpgProgram>? _extractProgramsForEpgid(String filePath, String epgid) {
+    try {
+      final xml = File(filePath).readAsStringSync();
 
-    final xml = File(filePath).readAsStringSync();
+      // 1. 查找 channel id
+      final channelId = _findChannelIdForDisplayName(xml, epgid);
+      if (channelId == null) return null;
 
-    // ---- 提取 channel icon ----
-    final channelBlocks = xml.split('</channel>');
-    for (final block in channelBlocks) {
+      // 2. 提取该 channel 的所有 programme
+      final programs = <EpgProgram>[];
+      final blocks = xml.split('</programme>');
+      for (final block in blocks) {
+        final progIdx = block.lastIndexOf('<programme');
+        if (progIdx == -1) continue;
+        final tagEnd = block.indexOf('>', progIdx);
+        if (tagEnd == -1) continue;
+
+        final tag = block.substring(progIdx, tagEnd + 1);
+
+        // 检查 channel 属性
+        final chIdx = tag.indexOf('channel="');
+        if (chIdx == -1) continue;
+        final chEnd = tag.indexOf('"', chIdx + 9);
+        final ch = tag.substring(chIdx + 9, chEnd);
+        if (ch != channelId) continue;
+
+        // 解析 start / stop
+        final sIdx = tag.indexOf('start="');
+        final eIdx = tag.indexOf('stop="');
+        if (sIdx == -1 || eIdx == -1) continue;
+        final sEnd = tag.indexOf('"', sIdx + 7);
+        final eEnd = tag.indexOf('"', eIdx + 6);
+
+        final start = _parseXmltvTime(tag.substring(sIdx + 7, sEnd));
+        final stop = _parseXmltvTime(tag.substring(eIdx + 6, eEnd));
+        if (start == null || stop == null) continue;
+
+        final content = block.substring(tagEnd + 1);
+        final title = _extractTag(content, 'title');
+        final desc = _extractTag(content, 'desc');
+
+        programs.add(EpgProgram(
+          title: title,
+          description: desc,
+          start: start,
+          stop: stop,
+        ));
+      }
+
+      programs.sort((a, b) => a.start.compareTo(b.start));
+      return programs;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /// 提取指定 epgid 的频道图标 URL
+  @pragma('vm:entry-point')
+  static String? _extractIconForEpgid(String filePath, String epgid) {
+    try {
+      final xml = File(filePath).readAsStringSync();
+      // 查找 display-name 匹配的 channel
+      final channelBlock = _findChannelBlockForDisplayName(xml, epgid);
+      if (channelBlock == null) return null;
+
+      // 从 channel 块中提取 icon src
+      final iconIdx = channelBlock.indexOf('src="');
+      if (iconIdx == -1) return null;
+      final iconEnd = channelBlock.indexOf('"', iconIdx + 5);
+      return channelBlock.substring(iconIdx + 5, iconEnd);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // ========== 辅助解析函数 ==========
+  static String? _findChannelIdForDisplayName(String xml, String displayName) {
+    final blocks = xml.split('</channel>');
+    for (final block in blocks) {
       final chIdx = block.lastIndexOf('<channel');
       if (chIdx == -1) continue;
-
       final tagEnd = block.indexOf('>', chIdx);
       if (tagEnd == -1) continue;
 
-      final tag = block.substring(chIdx, tagEnd + 1);
-      final idIdx = tag.indexOf('id="');
+      // 检查 display-name
+      final dnStart = block.indexOf('<display-name>');
+      if (dnStart == -1) continue;
+      final dnEnd = block.indexOf('</display-name>', dnStart);
+      if (dnEnd == -1) continue;
+      final dn = block.substring(dnStart + 14, dnEnd).trim();
+      if (dn != displayName) continue;
+
+      // 提取 id
+      final idIdx = block.indexOf('id="', chIdx);
       if (idIdx == -1) continue;
-      final idEnd = tag.indexOf('"', idIdx + 4);
-      final channelId = tag.substring(idIdx + 4, idEnd);
+      final idEnd = block.indexOf('"', idIdx + 4);
+      return block.substring(idIdx + 4, idEnd);
+    }
+    return null;
+  }
 
-      if (!needed.contains(channelId)) continue;
-
-      final iconIdx = block.indexOf('src="');
-      if (iconIdx != -1) {
-        final iconEnd = block.indexOf('"', iconIdx + 5);
-        icons[channelId] = block.substring(iconIdx + 5, iconEnd);
+  static String? _findChannelBlockForDisplayName(String xml, String displayName) {
+    final blocks = xml.split('</channel>');
+    for (final block in blocks) {
+      final chIdx = block.lastIndexOf('<channel');
+      if (chIdx == -1) continue;
+      final dnStart = block.indexOf('<display-name>');
+      if (dnStart == -1) continue;
+      final dnEnd = block.indexOf('</display-name>', dnStart);
+      if (dnEnd == -1) continue;
+      final dn = block.substring(dnStart + 14, dnEnd).trim();
+      if (dn == displayName) {
+        return block;
       }
     }
-
-    // ---- 提取 programme（只保留 needed channels）----
-    final blocks = xml.split('</programme>');
-    for (final block in blocks) {
-      final progIdx = block.lastIndexOf('<programme');
-      if (progIdx == -1) continue;
-
-      final tagEnd = block.indexOf('>', progIdx);
-      if (tagEnd == -1) continue;
-
-      final tag = block.substring(progIdx, tagEnd + 1);
-
-      final chIdx = tag.indexOf('channel="');
-      if (chIdx == -1) continue;
-      final chEnd = tag.indexOf('"', chIdx + 9);
-      final channelId = tag.substring(chIdx + 9, chEnd);
-
-      if (!needed.contains(channelId)) continue;
-
-      final sIdx = tag.indexOf('start="');
-      final eIdx = tag.indexOf('stop="');
-      if (sIdx == -1 || eIdx == -1) continue;
-      final sEnd = tag.indexOf('"', sIdx + 7);
-      final eEnd = tag.indexOf('"', eIdx + 6);
-
-      final start = _parseXmltvTime(tag.substring(sIdx + 7, sEnd));
-      final stop = _parseXmltvTime(tag.substring(eIdx + 6, eEnd));
-      if (start == null || stop == null) continue;
-
-      final content = block.substring(tagEnd + 1);
-      final title = _extractTag(content, 'title');
-      final desc = _extractTag(content, 'desc');
-
-      programMap.putIfAbsent(channelId, () => []).add(EpgProgram(
-        title: title,
-        description: desc,
-        start: start,
-        stop: stop,
-      ));
-      count++;
-    }
-
-    // 排序
-    for (final list in programMap.values) {
-      list.sort((a, b) => a.start.compareTo(b.start));
-    }
-
-    return _ExtractResult(programMap, icons, count);
+    return null;
   }
 
   static DateTime? _parseXmltvTime(String t) {
@@ -265,47 +337,7 @@ class EpgParser {
     return content.substring(tagEnd + 1, end).trim();
   }
 
-  // ========== 查询接口（纯内存，O(1)）==========
-  static Future<List<EpgProgram>> getProgramsByChannelName(String channelName) async {
-    if (channelName.isEmpty) return [];
-    final epgid = _nameToEpgidMap?[channelName];
-    if (epgid == null) return [];
-    return _memoryCache?[epgid] ?? [];
-  }
-
-  static Future<EpgProgram?> getCurrentProgram(String channelName) async {
-    final programs = await getProgramsByChannelName(channelName);
-    if (programs.isEmpty) return null;
-    final now = beijingNow;
-    return programs.firstWhereOrNull((p) => p.start.isBefore(now) && p.stop.isAfter(now));
-  }
-
-  static Future<EpgProgram?> getNextProgram(String channelName) async {
-    final programs = await getProgramsByChannelName(channelName);
-    if (programs.isEmpty) return null;
-    final now = beijingNow;
-    return programs.firstWhereOrNull((p) => p.start.isAfter(now));
-  }
-
-  static Future<String?> getChannelIcon(String channelName) async {
-    final epgid = _nameToEpgidMap?[channelName];
-    if (epgid == null) return null;
-    return _iconCache?[epgid];
-  }
-
-  static Future<String?> getChannelIconUrl(String channelName) {
-    return getChannelIcon(channelName);
-  }
-
-  static Future<Map<String, String>> getNameToEpgId() async {
-    return _nameToEpgidMap ?? {};
-  }
-
-  static Future<String?> getEpgidByChannelName(String channelName) async {
-    return _nameToEpgidMap?[channelName];
-  }
-
-  // ========== 加载 epg_data.json（name → epgid 映射）==========
+  // ========== 加载 epg_data.json ==========
   static Future<void> _loadEpgNameMap() async {
     if (_nameToEpgidMap != null) return;
     try {
@@ -394,14 +426,8 @@ class EpgParser {
     return true;
   }
 
+  // 已不再需要预热缓存，保留空实现以防外部调用
   static Future<void> warmUpCache() async {
     await _loadEpgNameMap();
   }
-}
-
-class _ExtractResult {
-  final Map<String, List<EpgProgram>> programs;
-  final Map<String, String> icons;
-  final int count;
-  _ExtractResult(this.programs, this.icons, this.count);
 }
