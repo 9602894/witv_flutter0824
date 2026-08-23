@@ -10,21 +10,26 @@ import '../models/epg_program.dart';
 import 'log_service.dart';
 import 'config_service.dart';
 
-/// EPG 服务 - 只提取 needed channels 到内存
+/// EPG 服务 - 保留 XML 文件，重启后直接提取到内存
+///
+/// 1. epg_data.json: name → epgid（epgid = XML <display-name>）
+/// 2. 下载 XML → 保留文件 → Isolate 提取 needed channels → 内存
+/// 3. 重启后：XML 文件还在 → 直接提取到内存（无需重新下载）
+/// 4. 所有时间强制东八区 UTC+8
 class EpgParser {
   static const String _epgUrlKey = 'epg_url';
   static const String _lastEpgUpdateKey = 'last_epg_update';
   static const String _epgDataJsonAsset = 'assets/epg_data.json';
-  static const String _epgTempFile = 'epg_temp.xml';
+  static const String _epgXmlFile = 'epg_data.xml';  // 保留的 XML 文件
 
   static Map<String, String>? _nameToEpgidMap;
   static Map<String, List<EpgProgram>>? _memoryCache;
   static Map<String, String>? _iconCache;
 
-  static bool _isDownloading = false;
+  static bool _isWorking = false;
   static final ValueNotifier<int> epgUpdateCounter = ValueNotifier(0);
 
-  /// 东八区当前时间（不受设备时区/代理影响）
+  /// 东八区当前时间（强制 UTC+8，不受设备时区/代理影响）
   static DateTime get beijingNow {
     return DateTime.now().toUtc().add(const Duration(hours: 8));
   }
@@ -33,33 +38,95 @@ class EpgParser {
     return dt.toUtc().add(const Duration(hours: 8));
   }
 
+  /// 格式化为 HH:MM（东八区）
   static String formatBeijingTime(DateTime dt) {
     final bj = toBeijing(dt);
     return '${bj.hour.toString().padLeft(2, '0')}:${bj.minute.toString().padLeft(2, '0')}';
   }
 
-  static String formatBeijingTimeFull(DateTime dt) {
+  /// 格式化为 MM-dd HH:mm（东八区）
+  static String formatBeijingDateTime(DateTime dt) {
     final bj = toBeijing(dt);
-    return '${bj.hour.toString().padLeft(2, '0')}:${bj.minute.toString().padLeft(2, '0')}';
+    return '${bj.month.toString().padLeft(2, '0')}-${bj.day.toString().padLeft(2, '0')} '
+        '${bj.hour.toString().padLeft(2, '0')}:${bj.minute.toString().padLeft(2, '0')}';
+  }
+
+  /// 获取东八区日期（用于按日期分组）
+  static DateTime beijingDate(DateTime dt) {
+    final bj = toBeijing(dt);
+    return DateTime(bj.year, bj.month, bj.day);
   }
 
   // ========== 主入口 ==========
   static Future<void> init() async {
     LogService.write('EPG: init 开始');
     try {
+      // 1. 加载名称映射
       await _loadEpgNameMap();
       LogService.write('EPG: 名称映射 ${_nameToEpgidMap?.length ?? 0} 条');
-      _checkAndUpdateInBackground();
-      LogService.write('EPG: init 完成，后台提取中');
+
+      // 2. 【关键】检查本地 XML 文件是否存在
+      final dir = await getApplicationDocumentsDirectory();
+      final xmlFile = File('${dir.path}/$_epgXmlFile');
+
+      if (await xmlFile.exists()) {
+        // XML 文件存在，直接提取到内存（重启后走这里）
+        LogService.write('EPG: 发现本地 XML，直接提取');
+        await _extractFromLocalFile();
+      } else {
+        // 没有本地文件，后台下载
+        LogService.write('EPG: 无本地 XML，后台下载');
+        _checkAndUpdateInBackground();
+      }
+
+      LogService.write('EPG: init 完成');
     } catch (e, stack) {
       LogService.writeCrashLog('EPG init 失败: $e', stack);
     }
   }
 
-  // ========== 后台下载 + 只提取 needed channels ==========
+  // ========== 从本地 XML 文件提取（重启后调用）==========
+  static Future<void> _extractFromLocalFile() async {
+    if (_isWorking) return;
+    _isWorking = true;
+
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final xmlPath = '${dir.path}/$_epgXmlFile';
+      final needed = _nameToEpgidMap?.values.toSet().toList() ?? [];
+
+      LogService.write('EPG: 开始从本地 XML 提取 ${needed.length} 个频道');
+      final stopwatch = Stopwatch()..start();
+
+      final result = await Isolate.run(() => _extractNeededPrograms(xmlPath, needed));
+      stopwatch.stop();
+
+      LogService.write(
+        'EPG: 提取完成 ${result.programs.length}频道 ${result.count}节目 '
+        '耗时 ${stopwatch.elapsedMilliseconds}ms',
+      );
+
+      _memoryCache = result.programs;
+      _iconCache = result.icons;
+      epgUpdateCounter.value++;
+      LogService.write('EPG: 内存已更新（从本地文件）');
+    } catch (e, stack) {
+      LogService.writeCrashLog('EPG 本地提取失败: $e', stack);
+      // 本地文件损坏，删除后重新下载
+      try {
+        final dir = await getApplicationDocumentsDirectory();
+        await File('${dir.path}/$_epgXmlFile').delete();
+      } catch (_) {}
+      _checkAndUpdateInBackground();
+    } finally {
+      _isWorking = false;
+    }
+  }
+
+  // ========== 后台下载 + 提取 ==========
   static void _checkAndUpdateInBackground() async {
-    if (_isDownloading) return;
-    _isDownloading = true;
+    if (_isWorking) return;
+    _isWorking = true;
 
     try {
       final url = await _resolveEpgUrl();
@@ -73,13 +140,18 @@ class EpgParser {
       if (lastUpdate != null) {
         final diff = DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(lastUpdate));
         if (diff < const Duration(hours: 6)) {
-          LogService.write('EPG: ${diff.inMinutes}分钟前已更新，跳过');
+          LogService.write('EPG: ${diff.inMinutes}分钟前已更新，跳过下载');
+          // 即使跳过下载，如果内存为空也要重新提取（文件还在）
+          if (_memoryCache == null || _memoryCache!.isEmpty) {
+            await _extractFromLocalFile();
+          }
           return;
         }
       }
 
+      // 下载到文件（保留，不删除）
       final dir = await getApplicationDocumentsDirectory();
-      final tempPath = '${dir.path}/$_epgTempFile';
+      final xmlPath = '${dir.path}/$_epgXmlFile';
 
       LogService.write('EPG: 开始下载...');
       final request = await HttpClient().getUrl(Uri.parse(url));
@@ -89,16 +161,17 @@ class EpgParser {
         return;
       }
 
-      final file = File(tempPath);
+      final file = File(xmlPath);
       await response.pipe(file.openWrite());
       final size = await file.length();
       LogService.write('EPG: 下载完成 ${(size / 1024 / 1024).toStringAsFixed(1)}MB');
 
+      // 提取 needed channels
       final needed = _nameToEpgidMap?.values.toSet().toList() ?? [];
       LogService.write('EPG: 需要提取 ${needed.length} 个频道');
 
       final stopwatch = Stopwatch()..start();
-      final result = await Isolate.run(() => _extractNeededPrograms(tempPath, needed));
+      final result = await Isolate.run(() => _extractNeededPrograms(xmlPath, needed));
       stopwatch.stop();
 
       LogService.write(
@@ -111,27 +184,27 @@ class EpgParser {
       epgUpdateCounter.value++;
       LogService.write('EPG: 内存已更新');
 
+      // 更新设置
       settings[_lastEpgUpdateKey] = DateTime.now().millisecondsSinceEpoch;
       await _saveSettings(settings);
-
-      try { await file.delete(); } catch (_) {}
 
       LogService.write('EPG: 后台完成');
     } catch (e, stack) {
       LogService.writeCrashLog('EPG 后台失败: $e', stack);
     } finally {
-      _isDownloading = false;
+      _isWorking = false;
     }
   }
 
   static Future<void> forceRefresh() async {
+    LogService.write('EPG: 强制刷新');
     final settings = await _loadSettings();
     settings.remove(_lastEpgUpdateKey);
     await _saveSettings(settings);
     _checkAndUpdateInBackground();
   }
 
-  // ========== Isolate：只提取 needed channels 的节目 ==========
+  // ========== Isolate：提取 needed channels ==========
   @pragma('vm:entry-point')
   static _ExtractResult _extractNeededPrograms(String filePath, List<String> neededDisplayNames) {
     final needed = Set<String>.from(neededDisplayNames);
@@ -263,9 +336,8 @@ class EpgParser {
     return content.substring(tagEnd + 1, end).trim();
   }
 
-  // ========== 查询接口（内存 O(1)）==========
+  // ========== 查询接口 ==========
 
-  /// 异步查询（兼容旧接口）
   static Future<List<EpgProgram>> getProgramsByChannelName(String channelName) async {
     if (channelName.isEmpty) return [];
     final epgid = _nameToEpgidMap?[channelName];
@@ -273,7 +345,7 @@ class EpgParser {
     return _memoryCache?[epgid] ?? [];
   }
 
-  /// 【新增】同步查询，供频道列表 build 方法直接使用（不阻塞 UI）
+  /// 同步查询（供频道列表 build 方法使用，不阻塞 UI）
   static List<EpgProgram> getProgramsSync(String channelName) {
     if (channelName.isEmpty) return [];
     final epgid = _nameToEpgidMap?[channelName];
@@ -281,7 +353,7 @@ class EpgParser {
     return _memoryCache?[epgid] ?? [];
   }
 
-  /// 【新增】同步获取当前节目（供频道列表使用）
+  /// 同步获取当前节目（东八区时间）
   static EpgProgram? getCurrentProgramSync(String channelName) {
     final programs = getProgramsSync(channelName);
     if (programs.isEmpty) return null;
@@ -289,7 +361,7 @@ class EpgParser {
     return programs.firstWhereOrNull((p) => p.start.isBefore(now) && p.stop.isAfter(now));
   }
 
-  /// 【新增】同步获取下一节目（供频道列表使用）
+  /// 同步获取下一节目（东八区时间）
   static EpgProgram? getNextProgramSync(String channelName) {
     final programs = getProgramsSync(channelName);
     if (programs.isEmpty) return null;
@@ -317,7 +389,6 @@ class EpgParser {
     return _iconCache?[epgid];
   }
 
-  /// 【新增】同步获取图标（供频道列表使用）
   static String? getChannelIconSync(String channelName) {
     final epgid = _nameToEpgidMap?[channelName];
     if (epgid == null) return null;
