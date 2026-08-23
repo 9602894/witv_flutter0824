@@ -288,20 +288,23 @@ class EpgParser {
     return _ExtractResult(programMap, icons, count);
   }
 
+  /// 【修复】EPG 文件已处理为东八区时间，先按东八区构造，再转 UTC 存储
   static DateTime? _parseXmltvTime(String t) {
     try {
       String s = t.trim();
       final tzMatch = RegExp(r'[+-]\d{4}').firstMatch(s);
       if (tzMatch != null) s = s.substring(0, tzMatch.start).trim();
       if (s.length >= 14) {
-        return DateTime.utc(
-          int.parse(s.substring(0, 4)),
-          int.parse(s.substring(4, 6)),
-          int.parse(s.substring(6, 8)),
-          int.parse(s.substring(8, 10)),
-          int.parse(s.substring(10, 12)),
-          int.parse(s.substring(12, 14)),
-        );
+        final year = int.parse(s.substring(0, 4));
+        final month = int.parse(s.substring(4, 6));
+        final day = int.parse(s.substring(6, 8));
+        final hour = int.parse(s.substring(8, 10));
+        final minute = int.parse(s.substring(10, 12));
+        final second = int.parse(s.substring(12, 14));
+
+        // EPG文件已处理为东八区时间，先按东八区构造，再转UTC
+        final bjTime = DateTime.utc(year, month, day, hour, minute, second);
+        return bjTime.subtract(const Duration(hours: 8));
       }
     } catch (_) {}
     return null;
