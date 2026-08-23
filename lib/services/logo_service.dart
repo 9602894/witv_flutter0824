@@ -273,13 +273,13 @@ class LogoService {
           imageBytes = await _fetchBytes(url, headers: headers);
           break;
         case LogoSource.epg:
-          // 先查 epg_data.json 映射的 icon
+          // 1. 先查 epg_data.json 映射的 icon
           final iconUrl = await EpgParser.getChannelIconUrl(channelName);
           if (iconUrl != null && iconUrl.isNotEmpty) {
             sourceDesc = 'EPG';
             imageBytes = await _fetchBytes(iconUrl);
           } else {
-            // 回退：直接查 EPG 中该 display-name 的 icon（不限于白名单）
+            // 2. 回退：直接查 EPG 中该 display-name 的 icon（不限于白名单）
             final directIcon = EpgParser.getIconUrlByDisplayNameSync(channelName);
             if (directIcon != null && directIcon.isNotEmpty) {
               sourceDesc = 'EPG(直接匹配)';
@@ -479,10 +479,11 @@ class LogoService {
     final id = _nameToEpgId?[channelName];
     if (id != null) return id;
 
-    // 2. 回退：直接查 EPG 文件中的 display-name（不限于白名单）
-    if (EpgParser.hasDisplayNameInEpg(channelName)) {
-      LogService.write('Logo: $channelName 在 EPG 中直接匹配到 display-name');
-      return channelName;
+    // 2. 回退：直接查 EPG 文件中的 display-name 获取真实 channel id
+    final channelId = EpgParser.getChannelIdByDisplayNameSync(channelName);
+    if (channelId != null) {
+      LogService.write('Logo: $channelName 在 EPG 中直接匹配到 channel id: $channelId');
+      return channelId;
     }
 
     LogService.write('Logo: 未找到映射: $channelName');
