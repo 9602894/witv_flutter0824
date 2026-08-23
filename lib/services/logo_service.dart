@@ -168,6 +168,216 @@ class LogoService {
     return null;
   }
 
+  // ==================== 新增：获取台标（含 fallbackUrl 处理） ====================
+
+  /// 获取台标（含 fallbackUrl 处理，所有图片强制本地处理）
+  Future<File?> getLogoWithFallback(String channelName, String? fallbackUrl) async {
+    // 先走正常流程（GitHub / M3U / EPG）
+    var file = await getLogo(channelName);
+    if (file != null) return file;
+
+    // 正常流程失败，用 fallbackUrl 下载并处理
+    if (fallbackUrl != null && fallbackUrl.isNotEmpty) {
+      file = await _processFallbackUrl(channelName, fallbackUrl);
+      if (file != null) {
+        _logoResultCache[channelName] = file;
+        return file;
+      }
+    }
+
+    return null;
+  }
+
+  // ==================== 新增：处理 fallbackUrl ====================
+
+  Future<File?> _processFallbackUrl(String channelName, String url) async {
+    try {
+      final logoDir = await _getLogoDir();
+      final safeName = 'fb_${_sanitizeFileName(channelName)}_v3.png';
+      final localFile = File(p.join(logoDir.path, safeName));
+
+      if (await localFile.exists()) {
+        return localFile;
+      }
+
+      final response = await http.get(Uri.parse(url));
+      if (response.statusCode == 200) {
+        final processed = await _processTransparency(response.bodyBytes, safeName);
+        await localFile.writeAsBytes(processed);
+        LogService.write('Logo: fallback 处理成功 $channelName');
+        return localFile;
+      }
+    } catch (e) {
+      LogService.write('Logo: fallback 处理失败 $channelName - $e');
+    }
+    return null;
+  }
+
+  // ==================== 核心透明化处理（完全复刻 Python 脚本） ====================
+
+  Future<Uint8List> _processTransparency(Uint8List imageBytes, String fileName) async {
+    img.Image? decoded;
+
+    // 按格式尝试解码
+    try { decoded = img.decodeImage(imageBytes); } catch (_) {}
+    try { decoded ??= img.decodePng(imageBytes); } catch (_) {}
+    try { decoded ??= img.decodeJpg(imageBytes); } catch (_) {}
+    try { decoded ??= img.decodeWebP(imageBytes); } catch (_) {}
+    try { decoded ??= img.decodeGif(imageBytes); } catch (_) {}
+    try { decoded ??= img.decodeBmp(imageBytes); } catch (_) {}
+
+    // Flutter ui 兜底解码
+    if (decoded == null) {
+      try {
+        final codec = await ui.instantiateImageCodec(imageBytes);
+        final frame = await codec.getNextFrame();
+        final uiImage = frame.image;
+        final byteData = await uiImage.toByteData(format: ui.ImageByteFormat.rawRgba);
+        if (byteData != null) {
+          final bytes = byteData.buffer.asUint8List();
+          decoded = img.Image(width: uiImage.width, height: uiImage.height, numChannels: 4);
+          for (int y = 0; y < uiImage.height; y++) {
+            for (int x = 0; x < uiImage.width; x++) {
+              final i = (y * uiImage.width + x) * 4;
+              final pixel = decoded.getPixel(x, y);
+              pixel.r = bytes[i];
+              pixel.g = bytes[i + 1];
+              pixel.b = bytes[i + 2];
+              pixel.a = bytes[i + 3];
+            }
+          }
+        }
+        uiImage.dispose();
+      } catch (_) {
+        decoded = null;
+      }
+    }
+
+    if (decoded == null) {
+      LogService.write('Logo: 无法解码 $fileName，返回原始数据');
+      return imageBytes;
+    }
+
+    // 强制转 RGBA
+    final rgba = decoded.convert(numChannels: 4);
+
+    // 检测背景色
+    final bgColor = _getBackgroundColor(rgba);
+    LogService.write('Logo: $fileName 背景色 RGB(${bgColor.r},${bgColor.g},${bgColor.b})');
+
+    // 强制透明化
+    _forceTransparent(rgba, bgColor);
+    return Uint8List.fromList(img.encodePng(rgba));
+  }
+
+  // 复刻 Python 的 get_background_color，但增强处理
+  _RgbColor _getBackgroundColor(img.Image image) {
+    final w = image.width;
+    final h = image.height;
+
+    final samples = <List<int>>[];
+
+    void addSample(int x, int y) {
+      final p = image.getPixel(x, y);
+      if (p.a.toInt() == 0) return; // 忽略已透明像素
+      samples.add([p.r.toInt(), p.g.toInt(), p.b.toInt()]);
+    }
+
+    // 四角
+    addSample(0, 0);
+    addSample(w - 1, 0);
+    addSample(0, h - 1);
+    addSample(w - 1, h - 1);
+
+    // 边缘采样
+    final stepX = max(1, w ~/ 20);
+    final stepY = max(1, h ~/ 20);
+    for (int x = 0; x < w; x += stepX) {
+      addSample(x, 0);
+      addSample(x, h - 1);
+    }
+    for (int y = 0; y < h; y += stepY) {
+      addSample(0, y);
+      addSample(w - 1, y);
+    }
+
+    // 边缘采不到（贴边台标），扩展到全图
+    if (samples.length < 10) {
+      final fullStepX = max(1, w ~/ 10);
+      final fullStepY = max(1, h ~/ 10);
+      for (int y = 0; y < h; y += fullStepY) {
+        for (int x = 0; x < w; x += fullStepX) {
+          final p = image.getPixel(x, y);
+          if (p.a.toInt() == 0) continue;
+          samples.add([p.r.toInt(), p.g.toInt(), p.b.toInt()]);
+        }
+      }
+    }
+
+    // 极端情况：全图透明，返回白色（处理完也是全透明，无害）
+    if (samples.isEmpty) {
+      return _RgbColor(255, 255, 255);
+    }
+
+    // 统计最常见颜色
+    final counter = <String, int>{};
+    for (final color in samples) {
+      final key = '${color[0]},${color[1]},${color[2]}';
+      counter[key] = (counter[key] ?? 0) + 1;
+    }
+
+    String mostCommon = '';
+    int maxCount = 0;
+    counter.forEach((key, count) {
+      if (count > maxCount) {
+        maxCount = count;
+        mostCommon = key;
+      }
+    });
+
+    final parts = mostCommon.split(',');
+    return _RgbColor(int.parse(parts[0]), int.parse(parts[1]), int.parse(parts[2]));
+  }
+
+  // 复刻 Python 的 make_transparent，改为直接修改图像
+  void _forceTransparent(img.Image image, _RgbColor bgColor) {
+    final w = image.width;
+    final h = image.height;
+    int total = 0;
+    int transparent = 0;
+
+    for (int y = 0; y < h; y++) {
+      for (int x = 0; x < w; x++) {
+        final p = image.getPixel(x, y);
+        if (p.a.toInt() == 0) continue;
+
+        total++;
+        final r = p.r.toInt();
+        final g = p.g.toInt();
+        final b = p.b.toInt();
+
+        // 条件1：在背景色容差内
+        final dr = r - bgColor.r;
+        final dg = g - bgColor.g;
+        final db = b - bgColor.b;
+        final dist = sqrt((dr * dr + dg * dg + db * db).toDouble());
+        final inTolerance = dist <= _transparencyTolerance;
+
+        // 条件2：无条件兜底 - 只要够白就透明（#F0F0F0 及以上）
+        final isNearWhite = r >= 240 && g >= 240 && b >= 240;
+
+        if (inTolerance || isNearWhite) {
+          p.a = 0;
+          transparent++;
+        }
+      }
+    }
+
+    LogService.write('Logo: 共 $total 个非透明像素，$transparent 个被设为透明');
+  }
+
+  // ==================== 原有 getLogo 方法（已修改缓存版本） ====================
+
   Future<File?> getLogo(String channelName) async {
     // 1. channelName 缓存
     if (_logoResultCache.containsKey(channelName)) {
@@ -188,8 +398,8 @@ class LogoService {
       return null;
     }
 
-    // ① 改 cacheName 加版本号
-    final cacheName = '${epgId ?? _sanitizeFileName(channelName)}_v2.png';
+    // ① 改 cacheName 加版本号 v3
+    final cacheName = '${epgId ?? _sanitizeFileName(channelName)}_v3.png';
     final logoDir = await _getLogoDir();
     final cacheFile = File(p.join(logoDir.path, cacheName));
 
@@ -333,172 +543,6 @@ class LogoService {
       LogService.write('Logo: 下载失败 $url - $e');
     }
     return null;
-  }
-
-  // ==================== 透明化处理核心（强制处理，永不跳过） ====================
-
-  // ② 替换 _processTransparency（永不跳过，decode 失败也兜底）
-  Future<Uint8List> _processTransparency(Uint8List imageBytes, String fileName) async {
-    img.Image? decoded;
-
-    // 尝试自动识别格式解码
-    try { decoded = img.decodeImage(imageBytes); } catch (_) {}
-
-    // 如果失败，用 Flutter ui 强制解码
-    if (decoded == null) {
-      try {
-        final codec = await ui.instantiateImageCodec(imageBytes);
-        final frame = await codec.getNextFrame();
-        final uiImage = frame.image;
-        final byteData = await uiImage.toByteData(format: ui.ImageByteFormat.rawRgba);
-        if (byteData != null) {
-          final bytes = byteData.buffer.asUint8List();
-          decoded = img.Image(width: uiImage.width, height: uiImage.height, numChannels: 4);
-          for (int y = 0; y < uiImage.height; y++) {
-            for (int x = 0; x < uiImage.width; x++) {
-              final i = (y * uiImage.width + x) * 4;
-              final pixel = decoded.getPixel(x, y);
-              pixel.r = bytes[i];
-              pixel.g = bytes[i + 1];
-              pixel.b = bytes[i + 2];
-              pixel.a = bytes[i + 3];
-            }
-          }
-        }
-        uiImage.dispose();
-      } catch (_) {}
-    }
-
-    // 再尝试各格式兜底
-    if (decoded == null) {
-      try { decoded = img.decodePng(imageBytes); } catch (_) {}
-      try { decoded ??= img.decodeJpg(imageBytes); } catch (_) {}
-      try { decoded ??= img.decodeWebP(imageBytes); } catch (_) {}
-      try { decoded ??= img.decodeGif(imageBytes); } catch (_) {}
-      try { decoded ??= img.decodeBmp(imageBytes); } catch (_) {}
-    }
-
-    if (decoded == null) {
-      LogService.write('Logo: 无法解码 $fileName，返回原始数据');
-      return imageBytes;
-    }
-
-    // 强制转 RGBA，确保有 Alpha 通道
-    final rgba = decoded.convert(numChannels: 4);
-
-    // 检测背景色（永不返回 null）
-    final bgColor = _getBackgroundColor(rgba);
-    LogService.write('Logo: $fileName 背景色 RGB(${bgColor.r},${bgColor.g},${bgColor.b})');
-
-    // 强制透明化
-    _forceTransparent(rgba, bgColor);
-    return Uint8List.fromList(img.encodePng(rgba));
-  }
-
-  // ③ 替换 _getBackgroundColor（永不返回 null）
-  _RgbColor _getBackgroundColor(img.Image image) {
-    final w = image.width;
-    final h = image.height;
-
-    final samples = <List<int>>[];
-
-    void addSample(int x, int y) {
-      final p = image.getPixel(x, y);
-      if (p.a.toInt() == 0) return; // 忽略已透明像素
-      samples.add([p.r.toInt(), p.g.toInt(), p.b.toInt()]);
-    }
-
-    // 四角
-    addSample(0, 0);
-    addSample(w - 1, 0);
-    addSample(0, h - 1);
-    addSample(w - 1, h - 1);
-
-    // 边缘采样
-    final stepX = max(1, w ~/ 20);
-    final stepY = max(1, h ~/ 20);
-    for (int x = 0; x < w; x += stepX) {
-      addSample(x, 0);
-      addSample(x, h - 1);
-    }
-    for (int y = 0; y < h; y += stepY) {
-      addSample(0, y);
-      addSample(w - 1, y);
-    }
-
-    // 边缘采不到（贴边台标），扩展到全图
-    if (samples.length < 10) {
-      final fullStepX = max(1, w ~/ 10);
-      final fullStepY = max(1, h ~/ 10);
-      for (int y = 0; y < h; y += fullStepY) {
-        for (int x = 0; x < w; x += fullStepX) {
-          final p = image.getPixel(x, y);
-          if (p.a.toInt() == 0) continue;
-          samples.add([p.r.toInt(), p.g.toInt(), p.b.toInt()]);
-        }
-      }
-    }
-
-    // 极端情况：全图透明，返回白色（处理完也是全透明，无害）
-    if (samples.isEmpty) {
-      return _RgbColor(255, 255, 255);
-    }
-
-    // 统计最常见颜色
-    final counter = <String, int>{};
-    for (final color in samples) {
-      final key = '${color[0]},${color[1]},${color[2]}';
-      counter[key] = (counter[key] ?? 0) + 1;
-    }
-
-    String mostCommon = '';
-    int maxCount = 0;
-    counter.forEach((key, count) {
-      if (count > maxCount) {
-        maxCount = count;
-        mostCommon = key;
-      }
-    });
-
-    final parts = mostCommon.split(',');
-    return _RgbColor(int.parse(parts[0]), int.parse(parts[1]), int.parse(parts[2]));
-  }
-
-  // ④ 替换 _makeTransparent → _forceTransparent（直接修改像素，不返回新图）
-  void _forceTransparent(img.Image image, _RgbColor bgColor) {
-    final w = image.width;
-    final h = image.height;
-    int total = 0;
-    int transparent = 0;
-
-    for (int y = 0; y < h; y++) {
-      for (int x = 0; x < w; x++) {
-        final p = image.getPixel(x, y);
-        if (p.a.toInt() == 0) continue;
-
-        total++;
-        final r = p.r.toInt();
-        final g = p.g.toInt();
-        final b = p.b.toInt();
-
-        // 条件1：在背景色容差内
-        final dr = r - bgColor.r;
-        final dg = g - bgColor.g;
-        final db = b - bgColor.b;
-        final dist = sqrt((dr * dr + dg * dg + db * db).toDouble());
-        final inTolerance = dist <= _transparencyTolerance;
-
-        // 条件2：无条件兜底 - 只要够白就透明（#F0F0F0 及以上）
-        final isNearWhite = r >= 240 && g >= 240 && b >= 240;
-
-        if (inTolerance || isNearWhite) {
-          p.a = 0;
-          transparent++;
-        }
-      }
-    }
-
-    LogService.write('Logo: 共 $total 个非透明像素，$transparent 个被设为透明');
   }
 
   String _sanitizeFileName(String name) {
