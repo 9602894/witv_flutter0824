@@ -46,7 +46,7 @@ class _ScheduleViewState extends State<ScheduleView> {
   VoidCallback? _epgListener;
   bool _isLoading = false;
 
-  // 新增字段：日期选择
+  // 日期选择
   DateTime? _selectedDate;
   List<DateTime> _availableDates = [];
 
@@ -71,33 +71,31 @@ class _ScheduleViewState extends State<ScheduleView> {
     }
   }
 
-  // 修改：按日期分组，默认选中今天
+  // 按东八区日期分组加载
   Future<void> _loadPrograms() async {
     if (_selectedChannel == null) return;
     setState(() => _isLoading = true);
     try {
-      final programs = await (widget.getChannelPrograms != null
+      final allPrograms = await (widget.getChannelPrograms != null
           ? widget.getChannelPrograms!(_selectedChannel!.name)
           : EpgParser.getProgramsByChannelName(_selectedChannel!.name));
 
       // 按东八区日期分组
       final grouped = <DateTime, List<EpgProgram>>{};
-      for (final p in programs) {
+      for (final p in allPrograms) {
         final date = EpgParser.beijingDate(p.start);
         grouped.putIfAbsent(date, () => []).add(p);
       }
 
-      // 提取可用日期并排序
       _availableDates = grouped.keys.toList()..sort();
-      if (_selectedDate == null && _availableDates.isNotEmpty) {
-        final today = EpgParser.beijingDate(EpgParser.beijingNow);
-        _selectedDate = _availableDates.contains(today)
-            ? today
-            : _availableDates.first;
+      final today = EpgParser.beijingDate(EpgParser.beijingNow);
+
+      // 默认选中今天，如果没有就选第一天
+      if (_selectedDate == null || !_availableDates.contains(_selectedDate)) {
+        _selectedDate = _availableDates.contains(today) ? today : (_availableDates.isNotEmpty ? _availableDates.first : null);
       }
 
-      // 只显示选中日期的节目
-      _programs = grouped[_selectedDate] ?? [];
+      _programs = (_selectedDate != null && grouped.containsKey(_selectedDate)) ? grouped[_selectedDate]! : [];
     } catch (e) {
       _programs = [];
     }
@@ -112,9 +110,6 @@ class _ScheduleViewState extends State<ScheduleView> {
     super.dispose();
   }
 
-  // ============================================================
-  // 构建（顶部日期横排 + 节目列表）
-  // ============================================================
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
@@ -123,50 +118,51 @@ class _ScheduleViewState extends State<ScheduleView> {
 
     return Column(
       children: [
-        // 顶部日期横排选择器
-        Container(
-          height: 44,
-          color: Colors.black.withOpacity(0.3),
-          child: ListView.builder(
-            scrollDirection: Axis.horizontal,
-            itemCount: _availableDates.length,
-            padding: const EdgeInsets.symmetric(horizontal: 8),
-            itemBuilder: (context, index) {
-              final date = _availableDates[index];
-              final isSelected = _selectedDate == date;
-              final isToday = date == EpgParser.beijingDate(EpgParser.beijingNow);
+        // ---------- 顶部日期横排选择器 ----------
+        if (_availableDates.isNotEmpty)
+          Container(
+            height: 44,
+            color: Colors.black.withOpacity(0.3),
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              itemCount: _availableDates.length,
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              itemBuilder: (context, index) {
+                final date = _availableDates[index];
+                final isSelected = _selectedDate == date;
+                final isToday = date == EpgParser.beijingDate(EpgParser.beijingNow);
 
-              return GestureDetector(
-                onTap: () {
-                  setState(() {
-                    _selectedDate = date;
-                  });
-                  _loadPrograms();
-                },
-                child: Container(
-                  margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: isSelected ? Colors.yellow : Colors.white.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                  child: Center(
-                    child: Text(
-                      isToday ? '今天' : '${date.month}/${date.day}',
-                      style: TextStyle(
-                        color: isSelected ? Colors.black : Colors.white,
-                        fontSize: 13,
-                        fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                return GestureDetector(
+                  onTap: () {
+                    setState(() {
+                      _selectedDate = date;
+                    });
+                    _loadPrograms();
+                  },
+                  child: Container(
+                    margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: isSelected ? Colors.yellow : Colors.white.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: Center(
+                      child: Text(
+                        isToday ? '今天' : '${date.month}/${date.day}',
+                        style: TextStyle(
+                          color: isSelected ? Colors.black : Colors.white,
+                          fontSize: 13,
+                          fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                        ),
                       ),
                     ),
                   ),
-                ),
-              );
-            },
+                );
+              },
+            ),
           ),
-        ),
 
-        // 频道标题（带台标）
+        // ---------- 频道标题（带台标） ----------
         if (_selectedChannel != null)
           Container(
             padding: const EdgeInsets.all(12),
@@ -197,7 +193,7 @@ class _ScheduleViewState extends State<ScheduleView> {
             ),
           ),
 
-        // 节目列表
+        // ---------- 节目列表 ----------
         Expanded(
           child: _programs.isEmpty
               ? const Center(
@@ -231,7 +227,7 @@ class _ScheduleViewState extends State<ScheduleView> {
                             fontWeight: isCurrent ? FontWeight.bold : FontWeight.normal,
                           ),
                         ),
-                        // desc 全部显示
+                        // desc 全部显示（不限制行数）
                         subtitle: program.description.isNotEmpty
                             ? Padding(
                                 padding: const EdgeInsets.only(top: 2),
