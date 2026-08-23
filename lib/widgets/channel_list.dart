@@ -4,10 +4,9 @@ import '../models/channel.dart';
 import '../models/epg_program.dart';
 import '../services/logo_service.dart';
 
-// ---------- 独立的台标组件（StatefulWidget，避免 FutureBuilder 闪烁） ----------
 class _ChannelLogo extends StatefulWidget {
   final String channelName;
-  final String? fallbackUrl;
+  final String? fallbackUrl; // 保留参数但不再直接使用
   const _ChannelLogo({required this.channelName, this.fallbackUrl});
 
   @override
@@ -32,15 +31,12 @@ class _ChannelLogoState extends State<_ChannelLogo> {
     }
   }
 
-  // 修改 _load() —— 使用 getLogoWithFallback，统一处理
   Future<void> _load() async {
     final service = LogoService();
-    // 关键：用 getLogoWithFallback，确保 fallbackUrl 也经过本地处理
-    final file = await service.getLogoWithFallback(widget.channelName, widget.fallbackUrl);
+    // 关键：只走 LogoService，fallbackUrl 在 Service 内部处理
+    final file = await service.getLogo(widget.channelName);
     if (mounted && file != null && file.existsSync()) {
       setState(() => _logoFile = file);
-    } else {
-      if (mounted) setState(() => _logoFile = null);
     }
   }
 
@@ -54,8 +50,8 @@ class _ChannelLogoState extends State<_ChannelLogo> {
         errorBuilder: (_, __, ___) => const Icon(Icons.tv, color: Colors.white54, size: 24),
       );
     }
-    // 删除原来的 Image.network(fallbackUrl!) 直接显示逻辑
-    // 所有图片必须经过本地处理，不处理就不显示
+    // 删除 Image.network(widget.fallbackUrl!) 直接显示
+    // 台标必须来自 logo 文件夹，处理失败就显示默认图标
     return const Icon(Icons.tv, color: Colors.white54, size: 24);
   }
 }
@@ -68,8 +64,6 @@ class ChannelList extends StatelessWidget {
   final Map<String, List<EpgProgram>> epgMap;
   final bool showChannelNumber;
   final bool showLogo;
-  final EpgProgram? currentEpgProgram;
-  final EpgProgram? nextEpgProgram;
 
   const ChannelList({
     Key? key,
@@ -79,8 +73,6 @@ class ChannelList extends StatelessWidget {
     required this.epgMap,
     this.showChannelNumber = false,
     this.showLogo = true,
-    this.currentEpgProgram,
-    this.nextEpgProgram,
   }) : super(key: key);
 
   @override
@@ -96,7 +88,7 @@ class ChannelList extends StatelessWidget {
           leading: showLogo
               ? _ChannelLogo(
                   channelName: channel.name,
-                  fallbackUrl: channel.logoUrl,
+                  fallbackUrl: channel.logoUrl, // 传给 Service 内部处理，UI 不直接显示
                 )
               : null,
           title: Text(
@@ -109,26 +101,8 @@ class ChannelList extends StatelessWidget {
               fontSize: 14,
             ),
           ),
-          subtitle: isSelected && (currentEpgProgram != null || nextEpgProgram != null)
-              ? Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    if (currentEpgProgram != null)
-                      Text(
-                        '▶ ${currentEpgProgram!.title}',
-                        style: const TextStyle(color: Colors.green, fontSize: 12),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    if (nextEpgProgram != null)
-                      Text(
-                        '▷ ${nextEpgProgram!.title}',
-                        style: const TextStyle(color: Colors.white70, fontSize: 11),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                  ],
-                )
+          subtitle: isSelected
+              ? null // 按需添加 EPG 信息
               : null,
           selected: isSelected,
           onTap: () => onSelect(channel),
