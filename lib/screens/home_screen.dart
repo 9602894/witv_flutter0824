@@ -132,11 +132,7 @@ class _HomeScreenState extends State<HomeScreen> {
         await _updateEpgInfo();
         _showEpgInfoTemporarily();
       }
-      // 台标下载逻辑已移至 _epgListener，此处不再重复触发
-      // if (channels.isNotEmpty && !_logoDownloadTriggered) {
-      //   _logoDownloadTriggered = true;
-      //   _logoService.downloadAllLogos(channels);
-      // }
+      // 台标下载统一交给 _epgListener 处理，避免重复触发
     }).catchError((e, stack) {
       LogService.writeCrashLog('EPG后台加载失败: $e', stack);
     });
@@ -559,88 +555,156 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Widget _buildTag(String text) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.15),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Text(
+        text,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 11,
+        ),
+      ),
+    );
+  }
+
   Widget _buildEpgInfoBar() {
     final current = _currentProgram;
     final next = _nextProgram;
 
+    // 计算距结束时间
+    String? timeRemaining;
+    if (current != null) {
+      final now = EpgParser.beijingNow;
+      final diff = current.stop.difference(now);
+      if (diff.inMinutes > 0) {
+        timeRemaining = '距结束：${diff.inMinutes}分钟';
+      }
+    }
+
+    // 标签数据
+    final List<String> tags = [];
+    if (currentSpeed > 0) {
+      tags.add('${currentSpeed.toStringAsFixed(2)}MB/s');
+    }
+    tags.add('线路1/1');
+
     return Visibility(
       visible: _showEpgInfo,
-      child: GestureDetector(
-        onTap: () {},
-        child: Container(
+      child: Container(
+        margin: EdgeInsets.symmetric(
+          horizontal: MediaQuery.of(context).size.width * 0.05,
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        decoration: const BoxDecoration(
           color: Colors.transparent,
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-          child: SafeArea(
-            top: false,
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (currentChannel != null)
-                  ChannelLogo(
-                    channelName: currentChannel!.name,
-                    width: 70,
-                    height: 45,
-                    fit: BoxFit.contain,
-                  )
-                else
-                  const SizedBox(width: 70, height: 45),
-
-                const SizedBox(width: 12),
-
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
+        ),
+        child: SafeArea(
+          top: false,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // 第一行：台标 + 频道名 + 标签 + 距结束
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // 台标
+                  if (currentChannel != null)
+                    ChannelLogo(
+                      channelName: currentChannel!.name,
+                      width: 80,
+                      height: 50,
+                      fit: BoxFit.contain,
+                    )
+                  else
+                    const SizedBox(width: 80, height: 50),
+                  const SizedBox(width: 12),
+                  // 频道名
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          currentChannel?.name ?? '',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  // 右上角标签和距结束
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
-                      Text(
-                        currentChannel?.name ?? '',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                        ),
+                      Wrap(
+                        spacing: 6,
+                        runSpacing: 4,
+                        children: tags.map((t) => _buildTag(t)).toList(),
                       ),
-                      const SizedBox(height: 4),
-
-                      if (current != null)
-                        Text(
-                          '正在播放：${EpgParser.formatBeijingTime(current.start)} - ${EpgParser.formatBeijingTime(current.stop)}  ${current.title}',
-                          style: const TextStyle(color: Colors.white, fontSize: 13),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-
-                      if (current?.description?.isNotEmpty == true)
+                      if (timeRemaining != null)
                         Padding(
-                          padding: const EdgeInsets.only(top: 2),
+                          padding: const EdgeInsets.only(top: 4),
                           child: Text(
-                            current!.description!,
-                            style: const TextStyle(color: Colors.white70, fontSize: 12),
+                            timeRemaining,
+                            style: const TextStyle(
+                              color: Colors.white70,
+                              fontSize: 13,
+                            ),
                           ),
-                        )
-                      else
-                        const Padding(
-                          padding: EdgeInsets.only(top: 2),
-                          child: Text(
-                            '暂无描述信息',
-                            style: TextStyle(color: Colors.white54, fontSize: 12),
-                          ),
-                        ),
-
-                      const SizedBox(height: 4),
-
-                      if (next != null)
-                        Text(
-                          '下一节目：${EpgParser.formatBeijingTime(next.start)} - ${EpgParser.formatBeijingTime(next.stop)}  ${next.title}',
-                          style: const TextStyle(color: Colors.white70, fontSize: 12),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
                         ),
                     ],
                   ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              // 当前节目
+              if (current != null)
+                Text(
+                  '正在播放：${EpgParser.formatBeijingTime(current.start)} - ${EpgParser.formatBeijingTime(current.stop)}  ${current.title}',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 14,
+                  ),
                 ),
-              ],
-            ),
+              // 描述（完整显示）
+              if (current?.description?.isNotEmpty == true)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text(
+                    current!.description!,
+                    style: const TextStyle(
+                      color: Colors.white70,
+                      fontSize: 13,
+                    ),
+                  ),
+                )
+              else
+                const Padding(
+                  padding: EdgeInsets.only(top: 4),
+                  child: Text(
+                    '暂无描述信息',
+                    style: TextStyle(color: Colors.white54, fontSize: 13),
+                  ),
+                ),
+              const SizedBox(height: 4),
+              // 下一节目
+              if (next != null)
+                Text(
+                  '下一节目：${EpgParser.formatBeijingTime(next.start)} - ${EpgParser.formatBeijingTime(next.stop)}  ${next.title}',
+                  style: const TextStyle(
+                    color: Colors.white70,
+                    fontSize: 13,
+                  ),
+                ),
+            ],
           ),
         ),
       ),
