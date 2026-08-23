@@ -45,6 +45,7 @@ class _ScheduleViewState extends State<ScheduleView> {
   Channel? _selectedChannel;
   List<EpgProgram> _programs = [];
   VoidCallback? _epgListener;
+  VoidCallback? _logoListener;
   bool _isLoading = false;
 
   // 日期选择
@@ -65,6 +66,11 @@ class _ScheduleViewState extends State<ScheduleView> {
       if (mounted) _loadPrograms();
     };
     EpgParser.epgUpdateCounter.addListener(_epgListener!);
+
+    _logoListener = () {
+      if (mounted) _loadLogo();
+    };
+    LogoService().logoUpdateNotifier.addListener(_logoListener!);
   }
 
   @override
@@ -127,6 +133,9 @@ class _ScheduleViewState extends State<ScheduleView> {
   void dispose() {
     if (_epgListener != null) {
       EpgParser.epgUpdateCounter.removeListener(_epgListener!);
+    }
+    if (_logoListener != null) {
+      LogoService().logoUpdateNotifier.removeListener(_logoListener!);
     }
     super.dispose();
   }
