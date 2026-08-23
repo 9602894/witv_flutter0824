@@ -45,11 +45,8 @@ class _ScheduleViewState extends State<ScheduleView> {
   List<EpgProgram> _programs = [];
   bool _isLoading = false;
 
-  // ---------- EPG 更新监听（StreamSubscription 方式） ----------
-  StreamSubscription? _epgUpdateSub;
-
-  // ---------- EPG 更新监听（ValueNotifier 方式） ----------
-  VoidCallback? _epgListener;   // 新增
+  // EPG 更新监听（ValueNotifier 方式）
+  VoidCallback? _epgListener;   // 替换原来的 StreamSubscription
 
   @override
   void initState() {
@@ -57,12 +54,7 @@ class _ScheduleViewState extends State<ScheduleView> {
     _selectedChannel = widget.selectedChannel;
     _loadPrograms();
 
-    // StreamSubscription 方式：EPG 更新后自动刷新节目单
-    _epgUpdateSub = EpgParser.onEpgUpdated.listen((_) {
-      if (mounted) _loadPrograms();
-    });
-
-    // ValueNotifier 方式：EPG 更新后自动刷新节目单
+    // EPG 更新后自动刷新节目单
     _epgListener = () {
       if (mounted) _loadPrograms();
     };
@@ -103,14 +95,9 @@ class _ScheduleViewState extends State<ScheduleView> {
 
   @override
   void dispose() {
-    // 取消 StreamSubscription 监听
-    _epgUpdateSub?.cancel();
-
-    // 移除 ValueNotifier 监听
     if (_epgListener != null) {
       EpgParser.epgUpdateCounter.removeListener(_epgListener!);
     }
-
     super.dispose();
   }
 
