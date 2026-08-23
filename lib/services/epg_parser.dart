@@ -21,12 +21,16 @@ class EpgParser {
   static Map<String, String>? _iconCache;
   static Map<String, String>? _allDisplayNameToIcon;
   static Map<String, String>? _allDisplayNameToChannelId;
+  static Map<String, String>? _allChannelIdToIcon;
 
   static bool _isWorking = false;
   static final ValueNotifier<int> epgUpdateCounter = ValueNotifier(0);
 
-  /// 获取当前UTC时间（EPG节目时间已统一按UTC存储，可直接比较）
-  static DateTime get beijingNow => DateTime.now().toUtc();
+  /// [强制东八区]获取当前北京时间（不受设备时区/代理影响）
+  static DateTime get beijingNow {
+    final now = DateTime.now();
+    return now.toUtc().add(const Duration(hours: 8));
+  }
 
   static DateTime toBeijing(DateTime dt) {
     return dt.toUtc().add(const Duration(hours: 8));
@@ -97,6 +101,7 @@ class EpgParser {
       _iconCache = result.icons;
       _allDisplayNameToIcon = result.allDisplayNameToIcon;
       _allDisplayNameToChannelId = result.allDisplayNameToChannelId;
+      _allChannelIdToIcon = result.allChannelIdToIcon;
       epgUpdateCounter.value++;
       LogService.write('EPG: 内存已更新（从本地文件）');
     } catch (e, stack) {
@@ -165,6 +170,7 @@ class EpgParser {
       _iconCache = result.icons;
       _allDisplayNameToIcon = result.allDisplayNameToIcon;
       _allDisplayNameToChannelId = result.allDisplayNameToChannelId;
+      _allChannelIdToIcon = result.allChannelIdToIcon;
       epgUpdateCounter.value++;
       LogService.write('EPG: 内存已更新');
 
@@ -192,6 +198,7 @@ class EpgParser {
     final icons = <String, String>{};
     final allDisplayNameToIcon = <String, String>{};
     final allDisplayNameToChannelId = <String, String>{};
+    final allChannelIdToIcon = <String, String>{};
 
     final xml = File(filePath).readAsStringSync();
     final channelBlocks = xml.split('</channel>');
@@ -223,6 +230,7 @@ class EpgParser {
         final iconEnd = block.indexOf('"', iconIdx + 5);
         final iconUrl = block.substring(iconIdx + 5, iconEnd);
         allDisplayNameToIcon[displayName] = iconUrl;
+        allChannelIdToIcon[channelId] = iconUrl;
       }
 
       if (!needed.contains(displayName)) continue;
@@ -291,10 +299,9 @@ class EpgParser {
       list.sort((a, b) => a.start.compareTo(b.start));
     }
 
-    return _ExtractResult(programMap, icons, allDisplayNameToIcon, allDisplayNameToChannelId, count);
+    return _ExtractResult(programMap, icons, allDisplayNameToIcon, allDisplayNameToChannelId, allChannelIdToIcon, count);
   }
 
-  /// 【修复】EPG文件中的时间已经是东八区，按东八区构造后转UTC存储
   static DateTime? _parseXmltvTime(String t) {
     try {
       String s = t.trim();
@@ -391,6 +398,10 @@ class EpgParser {
 
   static String? getChannelIdByDisplayNameSync(String displayName) {
     return _allDisplayNameToChannelId?[displayName];
+  }
+
+  static String? getIconUrlByChannelIdSync(String channelId) {
+    return _allChannelIdToIcon?[channelId];
   }
 
   static bool hasDisplayNameInEpg(String displayName) {
@@ -504,6 +515,7 @@ class _ExtractResult {
   final Map<String, String> icons;
   final Map<String, String> allDisplayNameToIcon;
   final Map<String, String> allDisplayNameToChannelId;
+  final Map<String, String> allChannelIdToIcon;
   final int count;
-  _ExtractResult(this.programs, this.icons, this.allDisplayNameToIcon, this.allDisplayNameToChannelId, this.count);
+  _ExtractResult(this.programs, this.icons, this.allDisplayNameToIcon, this.allDisplayNameToChannelId, this.allChannelIdToIcon, this.count);
 }
