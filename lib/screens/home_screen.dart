@@ -90,7 +90,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Timer? _digitTimer;
 
   // ---------- 自动加载标记 ----------
-  VoidCallback? _epgListener;   // 新增字段
+  VoidCallback? _epgListener;   // EPG 更新监听器
   bool _autoLoaded = false;
 
   // ============================================================
