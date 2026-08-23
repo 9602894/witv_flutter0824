@@ -15,14 +15,9 @@ import '../models/channel.dart';
 import '../models/epg_program.dart';
 import '../models/subscription.dart';
 import '../widgets/ijk_player_widget.dart';
-import '../widgets/channel_list.dart';
 import '../widgets/group_list.dart';
 import '../widgets/schedule_view.dart';
 import 'settings_screen.dart';
-
-// ============================================================
-// HomeScreen —— 酷9方案优化版：播放零阻塞，EPG 秒级全量加载
-// ============================================================
 
 class HomeScreen extends StatefulWidget {
   @override
@@ -60,10 +55,10 @@ class _HomeScreenState extends State<HomeScreen> {
   double _channelButtonInitTop = 0;
 
   // ---------- EPG ----------
-  EpgProgram? _currentEpgProgram;
-  EpgProgram? _nextEpgProgram;
+  EpgProgram? _currentProgram;
+  EpgProgram? _nextProgram;
+  String? _channelLogoUrl;   // 当前频道台标
   bool _isEpgUpdating = false;
-  bool _isEpgLoading = false;
 
   // ---------- 订阅 ----------
   Map<String, List<Channel>>? _fullGroupMap;
@@ -94,13 +89,10 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _autoLoaded = false;
 
   // ============================================================
-  // 工具函数（强制东八区）
+  // 工具函数
   // ============================================================
-
   DateTime get _beijingNow => EpgParser.beijingNow;
-
   String _formatTime(DateTime time) => EpgParser.formatBeijingTime(time);
-
   String _getDate(DateTime time) {
     final bj = EpgParser.toBeijing(time);
     return '${bj.year}-${bj.month.toString().padLeft(2, '0')}-${bj.day.toString().padLeft(2, '0')}';
@@ -109,7 +101,6 @@ class _HomeScreenState extends State<HomeScreen> {
   // ============================================================
   // 生命周期
   // ============================================================
-
   @override
   void initState() {
     super.initState();
@@ -138,7 +129,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
     _initEpgScheduler();
     _startEpgInfoTimer();
-
     _loadEpgInBackground();
 
     if (mounted) setState(() => isLoading = false);
@@ -173,7 +163,6 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ========== 布局配置 ==========
-
   Future<void> _initLayoutConfigFile() async {
     try {
       final dir = await getApplicationDocumentsDirectory();
@@ -251,7 +240,6 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ========== EPG 调度 ==========
-
   void _initEpgScheduler() {
     _epgUpdateTimer = Timer.periodic(const Duration(hours: 6), (_) {
       _checkEpgUpdate();
@@ -272,7 +260,6 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ========== EPG 查询 ==========
-
   Future<EpgProgram?> _getCurrentProgram(String channelName) async {
     return await EpgParser.getCurrentProgram(channelName);
   }
@@ -289,16 +276,18 @@ class _HomeScreenState extends State<HomeScreen> {
     if (currentChannel == null) return;
     final current = await _getCurrentProgram(currentChannel!.name);
     final next = await _getNextProgram(currentChannel!.name);
+    // 获取台标
+    final logo = await EpgParser.getChannelIcon(currentChannel!.name);
     if (mounted) {
       setState(() {
-        _currentEpgProgram = current;
-        _nextEpgProgram = next;
+        _currentProgram = current;
+        _nextProgram = next;
+        _channelLogoUrl = logo;
       });
     }
   }
 
   // ========== 每秒刷新 EPG 信息 ==========
-
   void _startEpgInfoTimer() {
     _epgInfoTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (currentChannel != null && mounted) {
@@ -308,7 +297,6 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ========== 播放器重连 ==========
-
   void _scheduleRetry() {
     _retryTimer?.cancel();
     _retryChannel = currentChannel;
@@ -336,7 +324,6 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ========== 频道切换 ==========
-
   void _switchChannel(Channel ch) {
     _cancelRetry();
     _digitBuffer = '';
@@ -351,7 +338,6 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ========== 分组切换 ==========
-
   void _switchToGroup(String groupName) {
     if (_fullGroupMap == null || _fullGroupMap!.isEmpty) return;
     final groupChannels = _fullGroupMap![groupName];
@@ -377,7 +363,6 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ========== 订阅源加载 ==========
-
   Future<void> _loadSubscriptionData(Subscription sub) async {
     try {
       final url = sub.url;
@@ -438,7 +423,6 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ========== 应用分组映射 ==========
-
   void _applyGroupMap(Map<String, List<Channel>> groupMap, String subName) {
     if (groupMap.isEmpty) return;
 
@@ -509,7 +493,6 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ========== 遥控器按键 ==========
-
   void _handleKeyEvent(RawKeyEvent event) {
     if (event is! RawKeyDownEvent) return;
     if (!showChannelList || isEditMode || isScheduleMode) return;
@@ -579,126 +562,148 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // ========== EPG 信息浮窗构建（修改：增加 description 显示） ==========
+  // ============================================================
+  // 新增：底部 EPG 信息框（修改 1.1）
+  // ============================================================
+  Widget _buildEpgInfo() {
+    final current = _currentProgram;
+    final next = _nextProgram;
 
-  Widget _buildEpgInfoWithLogo() {
-    final channel = currentChannel;
-    if (channel == null) return const SizedBox.shrink();
-
-    final current = _currentEpgProgram;
-    final next = _nextEpgProgram;
-    final now = _beijingNow;
-
-    double progress = 0.0;
-    if (current != null) {
-      final total = current.stop.difference(current.start).inSeconds;
-      final elapsed = now.difference(current.start).inSeconds;
-      progress = total > 0 ? (elapsed / total).clamp(0.0, 1.0) : 0.0;
-    }
-
-    return FutureBuilder<String?>(
-      future: EpgParser.getChannelIcon(channel.name),
-      builder: (context, iconSnapshot) {
-        final iconUrl = iconSnapshot.data;
-        return Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.black.withOpacity(0.75),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // 台标：透明背景
+          Container(
+            width: 80,
+            height: 50,
+            color: Colors.transparent,
+            child: _channelLogoUrl != null && _channelLogoUrl!.isNotEmpty
+                ? Image.network(
+                    _channelLogoUrl!,
+                    width: 80,
+                    height: 50,
+                    fit: BoxFit.contain,
+                    loadingBuilder: (context, child, loadingProgress) {
+                      if (loadingProgress == null) return child;
+                      return Container(color: Colors.transparent);
+                    },
+                    errorBuilder: (context, error, stackTrace) {
+                      return Container(color: Colors.transparent);
+                    },
+                  )
+                : Container(color: Colors.transparent),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
               children: [
-                if (iconUrl != null && iconUrl.isNotEmpty)
-                  Image.network(
-                    iconUrl,
-                    width: 40,
-                    height: 40,
-                    errorBuilder: (_, __, ___) => const SizedBox.shrink(),
-                  ),
-                const SizedBox(width: 8),
+                // 频道名称
                 Text(
-                  channel.name,
+                  currentChannel?.name ?? '',
                   style: const TextStyle(
                     color: Colors.white,
-                    fontSize: 18,
+                    fontSize: 16,
                     fontWeight: FontWeight.bold,
-                    shadows: [Shadow(blurRadius: 4, color: Colors.black)],
                   ),
                 ),
+                const SizedBox(height: 6),
+                // 正在播放（东八区时间）
+                if (current != null)
+                  Text(
+                    '正在播放：${EpgParser.formatBeijingTime(current.start)} - ${EpgParser.formatBeijingTime(current.stop)}  ${current.title}',
+                    style: const TextStyle(color: Colors.white, fontSize: 13),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                // desc 详细信息（最多两行）
+                if (current?.description?.isNotEmpty == true)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Text(
+                      current!.description!,
+                      style: const TextStyle(color: Colors.white70, fontSize: 12),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  )
+                else
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Text(
+                      '暂无描述信息',
+                      style: const TextStyle(color: Colors.white54, fontSize: 12),
+                    ),
+                  ),
+                const SizedBox(height: 4),
+                // 下一节目（东八区时间）
+                if (next != null)
+                  Text(
+                    '下一节目：${EpgParser.formatBeijingTime(next.start)} - ${EpgParser.formatBeijingTime(next.stop)}  ${next.title}',
+                    style: const TextStyle(color: Colors.white70, fontSize: 12),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
               ],
             ),
-            const SizedBox(height: 8),
-            if (current != null)
-              Column(
-                children: [
-                  Text(
-                    '正在播放: ${current.title}',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 14,
-                      shadows: [Shadow(blurRadius: 4, color: Colors.black)],
-                    ),
-                  ),
-                  // ===== 新增：显示 desc 详细信息 =====
-                  if (current.description != null && current.description!.isNotEmpty)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 4),
-                      child: Text(
-                        current.description!,
-                        style: const TextStyle(
-                          color: Colors.white70,
-                          fontSize: 12,
-                          shadows: [Shadow(blurRadius: 4, color: Colors.black)],
-                        ),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                  const SizedBox(height: 4),
-                  LinearProgressIndicator(
-                    value: progress,
-                    backgroundColor: Colors.white24,
-                    valueColor: const AlwaysStoppedAnimation(Colors.green),
-                    minHeight: 4,
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    '${_formatTime(current.start)} - ${_formatTime(current.stop)}',
-                    style: const TextStyle(
-                      color: Colors.white70,
-                      fontSize: 12,
-                      shadows: [Shadow(blurRadius: 4, color: Colors.black)],
-                    ),
-                  ),
-                ],
-              )
-            else
-              const Text(
-                '暂无节目信息',
-                style: TextStyle(
-                  color: Colors.white70,
-                  fontSize: 14,
-                  shadows: [Shadow(blurRadius: 4, color: Colors.black)],
-                ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ============================================================
+  // 新增：频道列表项（修改 1.3）
+  // ============================================================
+  Widget _buildChannelItem(Channel channel, int index) {
+    // 同步获取当前节目（O(1)，不阻塞 UI）
+    final currentEpg = EpgParser.getCurrentProgramSync(channel.name);
+    final isSelected = currentChannel?.name == channel.name;
+
+    return ListTile(
+      dense: true,
+      selected: isSelected,
+      selectedTileColor: Colors.white.withOpacity(0.1),
+      title: Text(
+        channel.name,
+        style: TextStyle(
+          color: isSelected ? Colors.yellow : Colors.white,
+          fontSize: 14,
+          fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+        ),
+      ),
+      // 频道名称下方显示当前 EPG
+      subtitle: currentEpg != null
+          ? Text(
+              '${EpgParser.formatBeijingTime(currentEpg.start)}-${EpgParser.formatBeijingTime(currentEpg.stop)} ${currentEpg.title}',
+              style: TextStyle(
+                color: isSelected ? Colors.yellow.withOpacity(0.8) : Colors.white70,
+                fontSize: 11,
               ),
-            if (next != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 4),
-                child: Text(
-                  '接下来: ${next.title} (${_formatTime(next.start)})',
-                  style: const TextStyle(
-                    color: Colors.white60,
-                    fontSize: 12,
-                    shadows: [Shadow(blurRadius: 4, color: Colors.black)],
-                  ),
-                ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            )
+          : Text(
+              '暂无节目信息',
+              style: TextStyle(
+                color: Colors.white38,
+                fontSize: 11,
               ),
-          ],
-        );
+            ),
+      onTap: () {
+        _switchChannel(channel);
       },
     );
   }
 
   // ========== 构建 UI ==========
-
   @override
   Widget build(BuildContext context) {
     final screenHeight = MediaQuery.of(context).size.height;
@@ -709,17 +714,6 @@ class _HomeScreenState extends State<HomeScreen> {
       final idx = channels.indexOf(currentChannel!);
       if (idx != _selectedIndex && idx >= 0) {
         _selectedIndex = idx;
-      }
-    }
-
-    // ===== 新增：构建当前频道 EPG 映射（每个频道只取当前节目，同步不阻塞） =====
-    Map<String, List<EpgProgram>> currentEpgMap = {};
-    if (channels.isNotEmpty) {
-      for (var ch in channels) {
-        final prog = EpgParser.getCurrentProgramSync(ch.name);
-        if (prog != null) {
-          currentEpgMap[ch.name] = [prog];
-        }
       }
     }
 
@@ -799,7 +793,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
 
-              // 频道列表模式
+              // 频道列表模式（替换原 ChannelList 为自定义列表）
               if (showChannelList && !isScheduleMode)
                 Positioned(
                   left: 0, top: 0, bottom: 0,
@@ -849,15 +843,10 @@ class _HomeScreenState extends State<HomeScreen> {
                           child: Stack(
                             children: [
                               Positioned.fill(
-                                child: ChannelList(
-                                  channels: channels,
-                                  selectedChannel: currentChannel,
-                                  onSelect: _switchChannel,
-                                  epgMap: currentEpgMap,  // ← 传入当前节目映射
-                                  showChannelNumber: false,
-                                  showLogo: true,
-                                  currentEpgProgram: _currentEpgProgram,
-                                  nextEpgProgram: _nextEpgProgram,
+                                child: ListView.builder(
+                                  itemCount: channels.length,
+                                  itemBuilder: (context, index) =>
+                                      _buildChannelItem(channels[index], index),
                                 ),
                               ),
                               Positioned(
@@ -893,7 +882,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
 
-              // 节目单模式
+              // 节目单模式（同样替换 ChannelList）
               if (isScheduleMode)
                 Positioned(
                   left: 0, top: 0, bottom: 0,
@@ -922,15 +911,10 @@ class _HomeScreenState extends State<HomeScreen> {
                           }, isEditMode: isEditMode),
                           Expanded(
                             flex: (scheduleChannelWeight * 100).toInt(),
-                            child: ChannelList(
-                              channels: channels,
-                              selectedChannel: currentChannel,
-                              onSelect: _switchChannel,
-                              epgMap: currentEpgMap,  // ← 传入当前节目映射
-                              showChannelNumber: false,
-                              showLogo: true,
-                              currentEpgProgram: _currentEpgProgram,
-                              nextEpgProgram: _nextEpgProgram,
+                            child: ListView.builder(
+                              itemCount: channels.length,
+                              itemBuilder: (context, index) =>
+                                  _buildChannelItem(channels[index], index),
                             ),
                           ),
                           _buildDragBar(onDrag: (delta) {
@@ -999,7 +983,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
 
-              // EPG 信息浮窗
+              // EPG 信息浮窗（使用新的 _buildEpgInfo）
               if (_showEpgInfo && currentChannel != null)
                 Positioned(
                   left: 0, right: 0,
@@ -1009,7 +993,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       constraints: const BoxConstraints(maxWidth: 500),
                       padding: const EdgeInsets.all(16),
                       decoration: const BoxDecoration(color: Colors.transparent),
-                      child: _buildEpgInfoWithLogo(),
+                      child: _buildEpgInfo(),
                     ),
                   ),
                 ),
@@ -1089,7 +1073,6 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ========== 辅助构建方法 ==========
-
   Widget _buildDragBar({required void Function(double) onDrag, required bool isEditMode}) {
     if (!isEditMode) return const SizedBox.shrink();
     return GestureDetector(
@@ -1144,7 +1127,6 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ========== 对话框方法 ==========
-
   void _showAddSubscriptionDialog() {
     // 原为空实现，保持原样
   }
