@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'dart:math';
 import 'dart:convert';
 import 'dart:ui' as ui;
+import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:http/http.dart' as http;
 import 'package:path/path.dart' as p;
@@ -55,6 +56,9 @@ class LogoService {
   final Map<String, String> _m3uLogos = {};
 
   final Map<String, Future<File?>> _pendingDownloads = {};
+
+  // 台标下载完成通知器，用于UI自动刷新
+  final ValueNotifier<String> logoUpdateNotifier = ValueNotifier<String>('');
 
   static const String _baseLogoUrl =
       'https://raw.githubusercontent.com/tytestelle/logo/main/ico/logo/';
@@ -170,6 +174,8 @@ class LogoService {
       if (result != null) {
         _logoResultCache[channelName] = result;
         if (epgId != null) _epgIdLogoCache[epgId] = result;
+        // 通知UI刷新
+        logoUpdateNotifier.value = channelName;
       }
       return result;
     } finally {
@@ -273,18 +279,27 @@ class LogoService {
           imageBytes = await _fetchBytes(url, headers: headers);
           break;
         case LogoSource.epg:
-          // 1. 先查 epg_data.json 映射的 icon
-          final iconUrl = await EpgParser.getChannelIconUrl(channelName);
+          // 1. 通过频道名获取 epgid（即 display-name）
+          final epgId = await _getEpgId(channelName);
+          if (epgId == null) {
+            LogService.write('Logo: $channelName 无 epgid 映射，跳过 EPG 来源');
+            break;
+          }
+
+          // 2. 用 epgid（display-name）找 channel id
+          final channelId = EpgParser.getChannelIdByDisplayNameSync(epgId);
+          if (channelId == null) {
+            LogService.write('Logo: $channelName epgid=$epgId 未找到对应 channel id');
+            break;
+          }
+
+          // 3. 用 channel id 找 icon
+          final iconUrl = EpgParser.getIconUrlByChannelIdSync(channelId);
           if (iconUrl != null && iconUrl.isNotEmpty) {
             sourceDesc = 'EPG';
             imageBytes = await _fetchBytes(iconUrl);
           } else {
-            // 2. 回退：直接查 EPG 中该 display-name 的 icon（不限于白名单）
-            final directIcon = EpgParser.getIconUrlByDisplayNameSync(channelName);
-            if (directIcon != null && directIcon.isNotEmpty) {
-              sourceDesc = 'EPG(直接匹配)';
-              imageBytes = await _fetchBytes(directIcon);
-            }
+            LogService.write('Logo: $channelName channelId=$channelId 无图标链接');
           }
           break;
       }
@@ -475,16 +490,9 @@ class LogoService {
       _nameMapLoaded = true;
       LogService.write('Logo: 名称映射加载完成，共 ${_nameToEpgId?.length ?? 0} 条');
     }
-    // 1. 先查 epg_data.json 映射
-    final id = _nameToEpgId?[channelName];
-    if (id != null) return id;
-
-    // 2. 回退：直接查 EPG 文件中的 display-name 获取真实 channel id
-    final channelId = EpgParser.getChannelIdByDisplayNameSync(channelName);
-    if (channelId != null) {
-      LogService.write('Logo: $channelName 在 EPG 中直接匹配到 channel id: $channelId');
-      return channelId;
-    }
+    // 只查 epg_data.json 映射，返回 epgid（即 display-name）
+    final epgid = _nameToEpgId?[channelName];
+    if (epgid != null) return epgid;
 
     LogService.write('Logo: 未找到映射: $channelName');
     return null;
