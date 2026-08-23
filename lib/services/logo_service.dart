@@ -19,7 +19,6 @@ class _RgbColor {
   const _RgbColor(this.r, this.g, this.b);
 }
 
-// 新增辅助函数（保留原有 _colorDistanceInt，此处添加为内部使用）
 double _colorDistanceInt(int r1, int g1, int b1, int r2, int g2, int b2) {
   final dr = r1 - r2;
   final dg = g1 - g2;
@@ -56,9 +55,7 @@ class LogoService {
   LogoService._internal();
 
   // ---------- 内存缓存 ----------
-  // channelName -> File?
   final Map<String, File?> _logoResultCache = {};
-  // epgId -> File? （同名 epgid 的所有频道共享）
   final Map<String, File?> _epgIdLogoCache = {};
 
   // ---------- 原有字段 ----------
@@ -66,7 +63,7 @@ class LogoService {
   bool _nameMapLoaded = false;
   final Map<String, String> _m3uLogos = {};
 
-  // 并发锁：防止同一个文件被同时下载多次
+  // 并发锁
   final Map<String, Future<File?>> _pendingDownloads = {};
 
   static const String _baseLogoUrl =
@@ -77,18 +74,15 @@ class LogoService {
 
   // ==================== 同步缓存查询 ====================
 
-  /// 同步获取 channelName 缓存
   File? getLogoSync(String channelName) {
     return _logoResultCache[channelName];
   }
 
-  /// 按 epgId 查同步缓存（供UI先用）
   File? getLogoByEpgIdSync(String? epgId) {
     if (epgId == null) return null;
     return _epgIdLogoCache[epgId];
   }
 
-  /// 异步查 epgId（供UI预加载用）
   Future<String?> getEpgIdAsync(String channelName) async {
     return await _getEpgId(channelName);
   }
@@ -150,14 +144,37 @@ class LogoService {
     } catch (e) {}
   }
 
-  /// 获取台标（带 epgId 共享缓存）
+  /// 下载指定 URL 的图片并做透明化处理（用于 fallbackUrl）
+  Future<File?> downloadAndProcess(String channelName, String url) async {
+    try {
+      final logoDir = await _getLogoDir();
+      final safeName = '${_sanitizeFileName(channelName)}_fallback_v2.png';
+      final localFile = File(p.join(logoDir.path, safeName));
+
+      if (await localFile.exists()) {
+        return localFile;
+      }
+
+      final response = await http.get(Uri.parse(url));
+      if (response.statusCode == 200) {
+        final processed = await _processTransparency(response.bodyBytes, safeName);
+        await localFile.writeAsBytes(processed);
+        LogService.write('Logo: fallback 下载并处理成功 $channelName');
+        return localFile;
+      }
+    } catch (e) {
+      LogService.write('Logo: fallback 处理失败 $channelName - $e');
+    }
+    return null;
+  }
+
   Future<File?> getLogo(String channelName) async {
     // 1. channelName 缓存
     if (_logoResultCache.containsKey(channelName)) {
       return _logoResultCache[channelName];
     }
 
-    // 2. epgId 缓存（同名 epgid 的所有频道共享）
+    // 2. epgId 缓存
     final epgId = await _getEpgId(channelName);
     if (epgId != null && _epgIdLogoCache.containsKey(epgId)) {
       final cached = _epgIdLogoCache[epgId];
@@ -171,11 +188,12 @@ class LogoService {
       return null;
     }
 
-    final cacheName = '${epgId ?? _sanitizeFileName(channelName)}.png';
+    // ① 改 cacheName 加版本号
+    final cacheName = '${epgId ?? _sanitizeFileName(channelName)}_v2.png';
     final logoDir = await _getLogoDir();
     final cacheFile = File(p.join(logoDir.path, cacheName));
 
-    // 3. 本地文件已存在（所有同名epgid共用）
+    // 3. 本地文件已存在
     if (await cacheFile.exists()) {
       LogService.write('Logo: $channelName 命中本地缓存 $cacheName');
       _logoResultCache[channelName] = cacheFile;
@@ -183,7 +201,7 @@ class LogoService {
       return cacheFile;
     }
 
-    // 4. 正在下载中，排队等待
+    // 4. 正在下载中
     if (_pendingDownloads.containsKey(cacheName)) {
       LogService.write('Logo: $channelName 等待 $cacheName 下载完成...');
       final result = await _pendingDownloads[cacheName]!;
@@ -212,7 +230,6 @@ class LogoService {
     }
   }
 
-  /// 获取台标 URL（优先使用 M3U 自带，其次 EPG）
   Future<String?> getLogoUrl(String channelName, String? fallbackUrl) async {
     if (fallbackUrl != null && fallbackUrl.isNotEmpty) {
       return fallbackUrl;
@@ -226,7 +243,6 @@ class LogoService {
     LogService.write('LogoService: 收到 M3U logo 映射 ${logos.length} 条');
   }
 
-  /// 预加载，限制并发避免影响播放
   Future<void> preloadAllLogos(List<Channel> channels) async {
     final sources = await getEnabledSources();
     if (sources.isEmpty) return;
@@ -243,7 +259,7 @@ class LogoService {
     LogService.write('LogoService: 预加载完成');
   }
 
-  // ==================== 下载逻辑（带锁保护） ====================
+  // ==================== 下载逻辑 ====================
 
   Future<File?> _downloadFromSources(String channelName, String cacheName, List<LogoSource> sources) async {
     final logoDir = await _getLogoDir();
@@ -321,15 +337,14 @@ class LogoService {
 
   // ==================== 透明化处理核心（强制处理，永不跳过） ====================
 
+  // ② 替换 _processTransparency（永不跳过，decode 失败也兜底）
   Future<Uint8List> _processTransparency(Uint8List imageBytes, String fileName) async {
     img.Image? decoded;
 
-    try {
-      decoded = img.decodeImage(imageBytes);
-    } catch (_) {
-      decoded = null;
-    }
+    // 尝试自动识别格式解码
+    try { decoded = img.decodeImage(imageBytes); } catch (_) {}
 
+    // 如果失败，用 Flutter ui 强制解码
     if (decoded == null) {
       try {
         final codec = await ui.instantiateImageCodec(imageBytes);
@@ -351,11 +366,10 @@ class LogoService {
           }
         }
         uiImage.dispose();
-      } catch (_) {
-        decoded = null;
-      }
+      } catch (_) {}
     }
 
+    // 再尝试各格式兜底
     if (decoded == null) {
       try { decoded = img.decodePng(imageBytes); } catch (_) {}
       try { decoded ??= img.decodeJpg(imageBytes); } catch (_) {}
@@ -365,70 +379,72 @@ class LogoService {
     }
 
     if (decoded == null) {
-      LogService.write('Logo: 无法解码图片 $fileName');
+      LogService.write('Logo: 无法解码 $fileName，返回原始数据');
       return imageBytes;
     }
 
-    // 关键：不再判断"是否已透明"，所有图片强制处理
-    final bgColor = _getBackgroundColor(decoded);
+    // 强制转 RGBA，确保有 Alpha 通道
+    final rgba = decoded.convert(numChannels: 4);
+
+    // 检测背景色（永不返回 null）
+    final bgColor = _getBackgroundColor(rgba);
     LogService.write('Logo: $fileName 背景色 RGB(${bgColor.r},${bgColor.g},${bgColor.b})');
-    
-    final transparent = _makeTransparent(decoded, bgColor, _transparencyTolerance);
-    return transparent;
+
+    // 强制透明化
+    _forceTransparent(rgba, bgColor);
+    return Uint8List.fromList(img.encodePng(rgba));
   }
 
-  // 永远返回一个背景色，绝不返回 null
+  // ③ 替换 _getBackgroundColor（永不返回 null）
   _RgbColor _getBackgroundColor(img.Image image) {
     final w = image.width;
     final h = image.height;
-    final hasAlpha = image.numChannels >= 4;
 
     final samples = <List<int>>[];
 
-    void addPixel(int x, int y) {
-      final px = image.getPixel(x, y);
-      // 忽略已经是透明的像素，避免干扰背景色检测
-      if (hasAlpha && px.a.toInt() == 0) return;
-      samples.add([px.r.toInt(), px.g.toInt(), px.b.toInt()]);
+    void addSample(int x, int y) {
+      final p = image.getPixel(x, y);
+      if (p.a.toInt() == 0) return; // 忽略已透明像素
+      samples.add([p.r.toInt(), p.g.toInt(), p.b.toInt()]);
     }
 
     // 四角
-    addPixel(0, 0);
-    addPixel(w - 1, 0);
-    addPixel(0, h - 1);
-    addPixel(w - 1, h - 1);
+    addSample(0, 0);
+    addSample(w - 1, 0);
+    addSample(0, h - 1);
+    addSample(w - 1, h - 1);
 
     // 边缘采样
     final stepX = max(1, w ~/ 20);
     final stepY = max(1, h ~/ 20);
     for (int x = 0; x < w; x += stepX) {
-      addPixel(x, 0);
-      addPixel(x, h - 1);
+      addSample(x, 0);
+      addSample(x, h - 1);
     }
     for (int y = 0; y < h; y += stepY) {
-      addPixel(0, y);
-      addPixel(w - 1, y);
+      addSample(0, y);
+      addSample(w - 1, y);
     }
 
-    // 边缘采不到足够样本（比如全图只有中间有内容），扩展到全图
+    // 边缘采不到（贴边台标），扩展到全图
     if (samples.length < 10) {
       final fullStepX = max(1, w ~/ 10);
       final fullStepY = max(1, h ~/ 10);
       for (int y = 0; y < h; y += fullStepY) {
         for (int x = 0; x < w; x += fullStepX) {
-          final px = image.getPixel(x, y);
-          if (hasAlpha && px.a.toInt() == 0) continue;
-          samples.add([px.r.toInt(), px.g.toInt(), px.b.toInt()]);
+          final p = image.getPixel(x, y);
+          if (p.a.toInt() == 0) continue;
+          samples.add([p.r.toInt(), p.g.toInt(), p.b.toInt()]);
         }
       }
     }
 
-    // 极端情况：全图都是透明的，返回白色（反正处理完也是全透明，无害）
+    // 极端情况：全图透明，返回白色（处理完也是全透明，无害）
     if (samples.isEmpty) {
       return _RgbColor(255, 255, 255);
     }
 
-    // 统计最常见的颜色
+    // 统计最常见颜色
     final counter = <String, int>{};
     for (final color in samples) {
       final key = '${color[0]},${color[1]},${color[2]}';
@@ -448,41 +464,41 @@ class LogoService {
     return _RgbColor(int.parse(parts[0]), int.parse(parts[1]), int.parse(parts[2]));
   }
 
-  Uint8List _makeTransparent(img.Image image, _RgbColor bgColor, int tolerance) {
-    final rgba = image.convert(numChannels: 4);
+  // ④ 替换 _makeTransparent → _forceTransparent（直接修改像素，不返回新图）
+  void _forceTransparent(img.Image image, _RgbColor bgColor) {
+    final w = image.width;
+    final h = image.height;
+    int total = 0;
+    int transparent = 0;
 
-    // 无条件兜底：所有接近纯白的像素强制透明
-    // 覆盖 #F5F5F5、#FAFAFA、#FEFEFE、#FFFFFF 等一切伪白
-    const int whiteThreshold = 245;
+    for (int y = 0; y < h; y++) {
+      for (int x = 0; x < w; x++) {
+        final p = image.getPixel(x, y);
+        if (p.a.toInt() == 0) continue;
 
-    int processed = 0;
-    int madeTransparent = 0;
+        total++;
+        final r = p.r.toInt();
+        final g = p.g.toInt();
+        final b = p.b.toInt();
 
-    for (int y = 0; y < rgba.height; y++) {
-      for (int x = 0; x < rgba.width; x++) {
-        final pixel = rgba.getPixel(x, y);
-        if (pixel.a.toInt() == 0) continue;
+        // 条件1：在背景色容差内
+        final dr = r - bgColor.r;
+        final dg = g - bgColor.g;
+        final db = b - bgColor.b;
+        final dist = sqrt((dr * dr + dg * dg + db * db).toDouble());
+        final inTolerance = dist <= _transparencyTolerance;
 
-        processed++;
-        final r = pixel.r.toInt();
-        final g = pixel.g.toInt();
-        final b = pixel.b.toInt();
+        // 条件2：无条件兜底 - 只要够白就透明（#F0F0F0 及以上）
+        final isNearWhite = r >= 240 && g >= 240 && b >= 240;
 
-        // 条件1：在检测出的背景色容差内（使用已有的距离函数）
-        final inBgTolerance = _colorDistanceInt(r, g, b, bgColor.r, bgColor.g, bgColor.b) <= tolerance;
-
-        // 条件2：无条件强制透明 - 只要像素够白就透明，不判断背景色
-        final isNearWhite = r >= whiteThreshold && g >= whiteThreshold && b >= whiteThreshold;
-
-        if (inBgTolerance || isNearWhite) {
-          pixel.a = 0;
-          madeTransparent++;
+        if (inTolerance || isNearWhite) {
+          p.a = 0;
+          transparent++;
         }
       }
     }
 
-    LogService.write('Logo: 处理 $processed 个像素，$madeTransparent 个被透明化');
-    return Uint8List.fromList(img.encodePng(rgba));
+    LogService.write('Logo: 共 $total 个非透明像素，$transparent 个被设为透明');
   }
 
   String _sanitizeFileName(String name) {
