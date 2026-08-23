@@ -5,7 +5,6 @@ import '../models/channel.dart';
 import '../models/epg_program.dart';
 import '../services/logo_service.dart';
 
-/// 从本地 logo 文件夹加载台标的公共组件
 class ChannelLogo extends StatefulWidget {
   final String channelName;
   final double width;
@@ -99,7 +98,7 @@ class ChannelList extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ListView.builder(
-      key: ValueKey('cl_\${channels.hashCode}'),
+      key: ValueKey('cl_${channels.hashCode}'),
       itemCount: channels.length,
       itemBuilder: (context, index) {
         final channel = channels[index];
@@ -115,7 +114,7 @@ class ChannelList extends StatelessWidget {
               : null,
           title: Text(
             showChannelNumber && channel.number != null
-                ? '\${channel.number}. \${channel.name}'
+                ? '${channel.number}. ${channel.name}'
                 : channel.name,
             style: TextStyle(
               color: isSelected ? Colors.yellow : Colors.white,
