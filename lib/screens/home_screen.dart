@@ -98,6 +98,11 @@ class _HomeScreenState extends State<HomeScreen> {
       if (!mounted) return;
       _updateEpgInfo();
       if (isScheduleMode) setState(() {});
+      // EPG真正加载/更新完成后，如果频道已就绪且未下载过台标，触发下载
+      if (channels.isNotEmpty && !_logoDownloadTriggered) {
+        _logoDownloadTriggered = true;
+        _logoService.downloadAllLogos(channels);
+      }
     };
     EpgParser.epgUpdateCounter.addListener(_epgListener!);
   }
@@ -127,11 +132,11 @@ class _HomeScreenState extends State<HomeScreen> {
         await _updateEpgInfo();
         _showEpgInfoTemporarily();
       }
-      // EPG加载完成后，如果频道已加载，触发台标下载
-      if (channels.isNotEmpty && !_logoDownloadTriggered) {
-        _logoDownloadTriggered = true;
-        _logoService.downloadAllLogos(channels);
-      }
+      // 台标下载逻辑已移至 _epgListener，此处不再重复触发
+      // if (channels.isNotEmpty && !_logoDownloadTriggered) {
+      //   _logoDownloadTriggered = true;
+      //   _logoService.downloadAllLogos(channels);
+      // }
     }).catchError((e, stack) {
       LogService.writeCrashLog('EPG后台加载失败: $e', stack);
     });
