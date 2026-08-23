@@ -288,12 +288,11 @@ class LogoService {
     return null;
   }
 
-  // ==================== 透明化处理 ====================
+  // ==================== 透明化处理（新版本，无编译错误） ====================
 
   Future<Uint8List> _processTransparency(Uint8List imageBytes, String fileName) async {
     img.Image? decoded;
 
-    // 解码
     try { decoded = img.decodeImage(imageBytes); } catch (_) {}
     try { decoded ??= img.decodePng(imageBytes); } catch (_) {}
     try { decoded ??= img.decodeJpg(imageBytes); } catch (_) {}
@@ -318,9 +317,7 @@ class LogoService {
           }
         }
         uiImage.dispose();
-      } catch (_) {
-        decoded = null;
-      }
+      } catch (_) {}
     }
 
     if (decoded == null) {
@@ -328,16 +325,49 @@ class LogoService {
       return imageBytes;
     }
 
-    // ========== 复刻 Python get_background_color ==========
-    // 注意：不对原图做 convert('RGB')，直接采样，忽略透明像素
-    final w = decoded.width;
-    final h = decoded.height;
-    final hasAlpha = decoded.numChannels >= 4;
+    // 关键：用非空局部变量，避免 Dart 空安全推断问题
+    final image = decoded;
+
+    // 复刻 Python get_background_color
+    final bgColor = _getBackgroundColor(image);
+    LogService.write('Logo: $fileName 背景色 RGB(${bgColor.r},${bgColor.g},${bgColor.b})');
+
+    // 复刻 Python make_transparent
+    final rgba = image.convert(numChannels: 4);
+    int transparentCount = 0;
+
+    for (int y = 0; y < rgba.height; y++) {
+      for (int x = 0; x < rgba.width; x++) {
+        final p = rgba.getPixel(x, y);
+        if (p.a.toInt() == 0) continue;
+
+        final dr = p.r.toInt() - bgColor.r;
+        final dg = p.g.toInt() - bgColor.g;
+        final db = p.b.toInt() - bgColor.b;
+        final dist = sqrt((dr * dr + dg * dg + db * db).toDouble());
+
+        if (dist <= _transparencyTolerance) {
+          rgba.setPixelRgba(x, y, p.r.toInt(), p.g.toInt(), p.b.toInt(), 0);
+          transparentCount++;
+        }
+      }
+    }
+
+    LogService.write('Logo: $fileName $transparentCount/${rgba.width * rgba.height} 像素透明化');
+    return Uint8List.fromList(img.encodePng(rgba));
+  }
+
+  // ==================== 辅助方法：提取背景色 ====================
+
+  _RgbColor _getBackgroundColor(img.Image image) {
+    final w = image.width;
+    final h = image.height;
+    final hasAlpha = image.numChannels >= 4;
 
     final samples = <List<int>>[];
 
     void addSample(int x, int y) {
-      final p = decoded.getPixel(x, y);
+      final p = image.getPixel(x, y);
       if (hasAlpha && p.a.toInt() == 0) return;
       samples.add([p.r.toInt(), p.g.toInt(), p.b.toInt()]);
     }
@@ -360,7 +390,7 @@ class LogoService {
       addSample(w - 1, y);
     }
 
-    // Counter.most_common(1)
+    // 统计出现次数最多的颜色
     final counter = <String, int>{};
     for (final color in samples) {
       final key = '${color[0]},${color[1]},${color[2]}';
@@ -377,41 +407,19 @@ class LogoService {
     });
 
     if (mostCommon.isEmpty) {
-      LogService.write('Logo: $fileName 无法检测背景色，直接保存');
-      return Uint8List.fromList(img.encodePng(decoded.convert(numChannels: 4)));
+      // 如果没有任何采样（例如全透明），返回黑色作为默认
+      return _RgbColor(0, 0, 0);
     }
 
     final parts = mostCommon.split(',');
-    final bgColor = _RgbColor(int.parse(parts[0]), int.parse(parts[1]), int.parse(parts[2]));
-    LogService.write('Logo: $fileName 背景色 RGB(${bgColor.r},${bgColor.g},${bgColor.b})');
-
-    // ========== 复刻 Python make_transparent ==========
-    final rgba = decoded.convert(numChannels: 4);
-    int transparentCount = 0;
-
-    for (int y = 0; y < rgba.height; y++) {
-      for (int x = 0; x < rgba.width; x++) {
-        final p = rgba.getPixel(x, y);
-        if (p.a.toInt() == 0) continue;
-
-        final dr = p.r.toInt() - bgColor.r;
-        final dg = p.g.toInt() - bgColor.g;
-        final db = p.b.toInt() - bgColor.b;
-        final dist = sqrt((dr * dr + dg * dg + db * db).toDouble());
-
-        if (dist <= _transparencyTolerance) {
-          rgba.setPixelRgba(x, y, p.r.toInt(), p.g.toInt(), p.b.toInt(), 0);
-          transparentCount++;
-        }
-      }
-    }
-
-    LogService.write('Logo: $fileName $transparentCount/${rgba.width * rgba.height} 像素透明化');
-
-    // ========== 编码并返回，不进行验证 ==========
-    final encoded = Uint8List.fromList(img.encodePng(rgba));
-    return encoded;
+    return _RgbColor(
+      int.parse(parts[0]),
+      int.parse(parts[1]),
+      int.parse(parts[2]),
+    );
   }
+
+  // ==================== 工具方法 ====================
 
   String _sanitizeFileName(String name) {
     return name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
