@@ -127,7 +127,7 @@ class LogoService {
       return cached;
     }
 
-    // ① 修改：文件名去掉 _v3
+    // 文件名不再带 _v3
     final cacheName = epgId != null ? '$epgId.png' : '${_sanitizeFileName(channelName)}.png';
     final logoDir = await _getLogoDir();
     final cacheFile = File(p.join(logoDir.path, cacheName));
@@ -185,7 +185,7 @@ class LogoService {
     LogService.write('LogoService: 预加载完成');
   }
 
-  // ==================== 下载逻辑（② 替换为 _downloadFromSources） ====================
+  // ==================== 下载逻辑 ====================
 
   Future<File?> _downloadFromSources(String channelName, String cacheName, {String? fallbackUrl}) async {
     final logoDir = await _getLogoDir();
@@ -288,7 +288,7 @@ class LogoService {
     return null;
   }
 
-  // ==================== 透明化处理（③ 替换为新的 _processTransparency） ====================
+  // ==================== 透明化处理 ====================
 
   Future<Uint8List> _processTransparency(Uint8List imageBytes, String fileName) async {
     img.Image? decoded;
