@@ -19,6 +19,14 @@ class _RgbColor {
   const _RgbColor(this.r, this.g, this.b);
 }
 
+// 新增辅助函数
+double _colorDistanceInt(int r1, int g1, int b1, int r2, int g2, int b2) {
+  final dr = r1 - r2;
+  final dg = g1 - g2;
+  final db = b1 - b2;
+  return sqrt((dr * dr + dg * dg + db * db).toDouble());
+}
+
 enum LogoSource {
   m3u,
   github,
@@ -370,67 +378,152 @@ class LogoService {
     return transparent;
   }
 
+  // ===== 替换后的 _getBackgroundColor =====
   _RgbColor? _getBackgroundColor(img.Image image) {
-    if (image.hasAlpha) {
-      final topLeft = image.getPixel(0, 0);
-      if (topLeft.a == 0) return null;
-    }
-
     final w = image.width;
     final h = image.height;
-    final counter = <String, int>{};
 
-    void count(img.Pixel p) {
-      final key = '${p.r},${p.g},${p.b}';
-      counter[key] = (counter[key] ?? 0) + 1;
+    // ===== 1. 检查是否已经透明（边缘大量 alpha=0，>70% 才算）=====
+    if (image.hasAlpha) {
+      int transparentCount = 0;
+      int totalCount = 0;
+      for (int x = 0; x < w; x += max(1, w ~/ 10)) {
+        totalCount += 2;
+        if (image.getPixel(x, 0).a.toInt() == 0) transparentCount++;
+        if (image.getPixel(x, h - 1).a.toInt() == 0) transparentCount++;
+      }
+      for (int y = 0; y < h; y += max(1, h ~/ 10)) {
+        totalCount += 2;
+        if (image.getPixel(0, y).a.toInt() == 0) transparentCount++;
+        if (image.getPixel(w - 1, y).a.toInt() == 0) transparentCount++;
+      }
+      if (totalCount > 0 && transparentCount / totalCount > 0.7) {
+        return null; // 真正已透明，无需处理
+      }
     }
 
-    count(image.getPixel(0, 0));
-    count(image.getPixel(w - 1, 0));
-    count(image.getPixel(0, h - 1));
-    count(image.getPixel(w - 1, h - 1));
+    // ===== 2. 四角一致性检测 =====
+    final c1 = image.getPixel(0, 0);
+    final c2 = image.getPixel(w - 1, 0);
+    final c3 = image.getPixel(0, h - 1);
+    final c4 = image.getPixel(w - 1, h - 1);
 
+    final corners = [
+      _RgbColor(c1.r.toInt(), c1.g.toInt(), c1.b.toInt()),
+      _RgbColor(c2.r.toInt(), c2.g.toInt(), c2.b.toInt()),
+      _RgbColor(c3.r.toInt(), c3.g.toInt(), c3.b.toInt()),
+      _RgbColor(c4.r.toInt(), c4.g.toInt(), c4.b.toInt()),
+    ];
+
+    bool cornersSimilar = true;
+    for (int i = 1; i < corners.length; i++) {
+      if (_colorDistanceInt(corners[0].r, corners[0].g, corners[0].b,
+                            corners[i].r, corners[i].g, corners[i].b) > 15) {
+        cornersSimilar = false;
+        break;
+      }
+    }
+
+    if (cornersSimilar) {
+      final r = (corners[0].r + corners[1].r + corners[2].r + corners[3].r) ~/ 4;
+      final g = (corners[0].g + corners[1].g + corners[2].g + corners[3].g) ~/ 4;
+      final b = (corners[0].b + corners[1].b + corners[2].b + corners[3].b) ~/ 4;
+      return _RgbColor(r, g, b);
+    }
+
+    // ===== 3. 边缘采样 + 频率统计 =====
+    final counter = <String, int>{};
     final stepX = max(1, w ~/ 20);
     final stepY = max(1, h ~/ 20);
 
     for (int x = 0; x < w; x += stepX) {
-      count(image.getPixel(x, 0));
-      count(image.getPixel(x, h - 1));
+      final p1 = image.getPixel(x, 0);
+      final p2 = image.getPixel(x, h - 1);
+      counter['${p1.r.toInt()},${p1.g.toInt()},${p1.b.toInt()}'] =
+          (counter['${p1.r.toInt()},${p1.g.toInt()},${p1.b.toInt()}'] ?? 0) + 1;
+      counter['${p2.r.toInt()},${p2.g.toInt()},${p2.b.toInt()}'] =
+          (counter['${p2.r.toInt()},${p2.g.toInt()},${p2.b.toInt()}'] ?? 0) + 1;
     }
     for (int y = 0; y < h; y += stepY) {
-      count(image.getPixel(0, y));
-      count(image.getPixel(w - 1, y));
+      final p1 = image.getPixel(0, y);
+      final p2 = image.getPixel(w - 1, y);
+      counter['${p1.r.toInt()},${p1.g.toInt()},${p1.b.toInt()}'] =
+          (counter['${p1.r.toInt()},${p1.g.toInt()},${p1.b.toInt()}'] ?? 0) + 1;
+      counter['${p2.r.toInt()},${p2.g.toInt()},${p2.b.toInt()}'] =
+          (counter['${p2.r.toInt()},${p2.g.toInt()},${p2.b.toInt()}'] ?? 0) + 1;
+    }
+
+    if (counter.isNotEmpty) {
+      String mostCommon = '';
+      int maxCount = 0;
+      int total = 0;
+      counter.forEach((key, count) {
+        total += count;
+        if (count > maxCount) {
+          maxCount = count;
+          mostCommon = key;
+        }
+      });
+
+      if (mostCommon.isNotEmpty && maxCount / total >= 0.4) {
+        final parts = mostCommon.split(',');
+        return _RgbColor(int.parse(parts[0]), int.parse(parts[1]), int.parse(parts[2]));
+      }
+    }
+
+    // ===== 4. 全图主色回退（缩小加速统计）=====
+    final small = img.copyResize(image, width: max(1, w ~/ 4), height: max(1, h ~/ 4));
+    final allCounter = <String, int>{};
+    for (int y = 0; y < small.height; y++) {
+      for (int x = 0; x < small.width; x++) {
+        final p = small.getPixel(x, y);
+        final key = '${p.r.toInt()},${p.g.toInt()},${p.b.toInt()}';
+        allCounter[key] = (allCounter[key] ?? 0) + 1;
+      }
     }
 
     String mostCommon = '';
     int maxCount = 0;
-    counter.forEach((key, count) {
+    allCounter.forEach((key, count) {
       if (count > maxCount) {
         maxCount = count;
         mostCommon = key;
       }
     });
 
-    if (mostCommon.isEmpty) return null;
+    if (mostCommon.isNotEmpty) {
+      final parts = mostCommon.split(',');
+      return _RgbColor(int.parse(parts[0]), int.parse(parts[1]), int.parse(parts[2]));
+    }
 
-    final parts = mostCommon.split(',');
-    return _RgbColor(int.parse(parts[0]), int.parse(parts[1]), int.parse(parts[2]));
+    return null;
   }
 
-  double _colorDistance(img.Pixel c1, _RgbColor c2) {
-    final dr = c1.r.toInt() - c2.r;
-    final dg = c1.g.toInt() - c2.g;
-    final db = c1.b.toInt() - c2.b;
-    return sqrt((dr * dr + dg * dg + db * db).toDouble());
-  }
-
+  // ===== 替换后的 _makeTransparent =====
   Uint8List _makeTransparent(img.Image image, _RgbColor bgColor, int tolerance) {
     final rgba = image.convert(numChannels: 4);
+
+    // 判断背景是否为浅色（白底、灰白底），用于兜底强制透明
+    final bgIsLight = bgColor.r >= 235 && bgColor.g >= 235 && bgColor.b >= 235;
+
     for (int y = 0; y < rgba.height; y++) {
       for (int x = 0; x < rgba.width; x++) {
         final pixel = rgba.getPixel(x, y);
-        if (pixel.a == 0) continue;
-        if (_colorDistance(pixel, bgColor) <= tolerance) {
+        if (pixel.a.toInt() == 0) continue;
+
+        final r = pixel.r.toInt();
+        final g = pixel.g.toInt();
+        final b = pixel.b.toInt();
+
+        // 条件1：在背景色容差内
+        final inBgTolerance = _colorDistanceInt(
+              r, g, b, bgColor.r, bgColor.g, bgColor.b) <= tolerance;
+
+        // 条件2：兜底 - 如果是浅色背景，强制把近白像素也透明
+        // threshold 248 确保 #FEFEFE、#FAFAFA 等全部透明
+        final forceWhiteTransparent = bgIsLight && r >= 248 && g >= 248 && b >= 248;
+
+        if (inBgTolerance || forceWhiteTransparent) {
           pixel.a = 0;
         }
       }
