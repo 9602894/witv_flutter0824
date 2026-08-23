@@ -19,6 +19,7 @@ class EpgParser {
   static Map<String, String>? _nameToEpgidMap;
   static Map<String, List<EpgProgram>>? _memoryCache;
   static Map<String, String>? _iconCache;
+  static Map<String, String>? _allDisplayNameToIcon; // 所有频道的 display-name -> icon url
 
   static bool _isWorking = false;
   static final ValueNotifier<int> epgUpdateCounter = ValueNotifier(0);
@@ -90,11 +91,12 @@ class EpgParser {
 
       LogService.write(
         'EPG: 提取完成 ${result.programs.length}频道 ${result.count}节目 '
-        '耗时 ${stopwatch.elapsedMilliseconds}ms',
+        '耗时 ${stopwatch.elapsedMilliseconds}ms 全部频道icon ${result.allDisplayNameToIcon.length}条',
       );
 
       _memoryCache = result.programs;
       _iconCache = result.icons;
+      _allDisplayNameToIcon = result.allDisplayNameToIcon;
       epgUpdateCounter.value++;
       LogService.write('EPG: 内存已更新（从本地文件）');
     } catch (e, stack) {
@@ -156,11 +158,12 @@ class EpgParser {
 
       LogService.write(
         'EPG: 提取完成 ${result.programs.length}频道 ${result.count}节目 '
-        '耗时 ${stopwatch.elapsedMilliseconds}ms',
+        '耗时 ${stopwatch.elapsedMilliseconds}ms 全部频道icon ${result.allDisplayNameToIcon.length}条',
       );
 
       _memoryCache = result.programs;
       _iconCache = result.icons;
+      _allDisplayNameToIcon = result.allDisplayNameToIcon;
       epgUpdateCounter.value++;
       LogService.write('EPG: 内存已更新');
 
@@ -186,6 +189,7 @@ class EpgParser {
     final needed = Set<String>.from(neededDisplayNames);
     final displayNameToId = <String, String>{};
     final icons = <String, String>{};
+    final allDisplayNameToIcon = <String, String>{};
 
     final xml = File(filePath).readAsStringSync();
     final channelBlocks = xml.split('</channel>');
@@ -210,11 +214,18 @@ class EpgParser {
       if (dnClose == -1) continue;
       final displayName = block.substring(dnTagEnd + 1, dnClose).trim();
 
+      // 收集所有频道的 icon（不限于白名单）
+      final iconIdx = block.indexOf('src="', tagEnd);
+      if (iconIdx != -1) {
+        final iconEnd = block.indexOf('"', iconIdx + 5);
+        final iconUrl = block.substring(iconIdx + 5, iconEnd);
+        allDisplayNameToIcon[displayName] = iconUrl;
+      }
+
       if (!needed.contains(displayName)) continue;
 
       displayNameToId[displayName] = channelId;
 
-      final iconIdx = block.indexOf('src="', tagEnd);
       if (iconIdx != -1) {
         final iconEnd = block.indexOf('"', iconIdx + 5);
         icons[displayName] = block.substring(iconIdx + 5, iconEnd);
@@ -277,7 +288,7 @@ class EpgParser {
       list.sort((a, b) => a.start.compareTo(b.start));
     }
 
-    return _ExtractResult(programMap, icons, count);
+    return _ExtractResult(programMap, icons, allDisplayNameToIcon, count);
   }
 
   static DateTime? _parseXmltvTime(String t) {
@@ -368,6 +379,16 @@ class EpgParser {
 
   static Future<String?> getChannelIconUrl(String channelName) {
     return getChannelIcon(channelName);
+  }
+
+  /// 通过 display-name 直接查询 EPG 中的 icon url（不限于 epg_data.json 白名单）
+  static String? getIconUrlByDisplayNameSync(String displayName) {
+    return _allDisplayNameToIcon?[displayName];
+  }
+
+  /// EPG 文件中是否包含该 display-name
+  static bool hasDisplayNameInEpg(String displayName) {
+    return _allDisplayNameToIcon?.containsKey(displayName) ?? false;
   }
 
   static Future<Map<String, String>> getNameToEpgId() async {
@@ -475,6 +496,7 @@ class EpgParser {
 class _ExtractResult {
   final Map<String, List<EpgProgram>> programs;
   final Map<String, String> icons;
+  final Map<String, String> allDisplayNameToIcon;
   final int count;
-  _ExtractResult(this.programs, this.icons, this.count);
+  _ExtractResult(this.programs, this.icons, this.allDisplayNameToIcon, this.count);
 }
