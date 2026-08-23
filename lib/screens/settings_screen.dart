@@ -4,6 +4,7 @@ import '../services/settings_service.dart';
 import '../services/log_service.dart';
 import '../services/config_service.dart';
 import '../services/epg_parser.dart';
+import '../services/logo_service.dart';
 import '../models/subscription.dart';
 import '../widgets/logo_source_dialog.dart';
 import 'dart:io';
@@ -274,8 +275,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     trailing: Icon(Icons.chevron_right),
                     onTap: () => LogoSourceSettingDialog.show(context),
                   ),
+                  // 【新增】清除台标缓存按钮
+                  ListTile(
+                    leading: Icon(Icons.delete_forever, color: Colors.red),
+                    title: Text('清除台标缓存', style: TextStyle(color: Colors.red)),
+                    subtitle: Text('删除 logo 文件夹中的所有台标'),
+                    onTap: () => _confirmClearLogoCache(),
+                  ),
                   SizedBox(height: 4),
-                  Text('所有台标下载后都会自动进行背景透明化处理。',
+                  Text('GitHub 来源直接保存；M3U / EPG 来源自动去除白底后保存。',
                     style: TextStyle(fontSize: 12, color: Colors.grey)),
                 ],
               ),
@@ -471,6 +479,33 @@ class _SettingsScreenState extends State<SettingsScreen> {
       );
     } finally {
       setState(() => _isLoadingToken = false);
+    }
+  }
+
+  // 【新增】清除台标缓存确认
+  Future<void> _confirmClearLogoCache() async {
+    final confirm = await _showTransparentDialog<bool>(
+      context: context,
+      title: '确认清除台标缓存',
+      content: '将删除 logo 文件夹中的所有台标图片，确认吗？',
+      confirmText: '清除',
+      confirmColor: Colors.red,
+    );
+    if (confirm == true) {
+      try {
+        await LogoService().clearLogoCache();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('台标缓存已清空')),
+          );
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('清除失败: $e')),
+          );
+        }
+      }
     }
   }
 
