@@ -127,10 +127,10 @@ class LogoService {
       return cached;
     }
 
-    // 统一文件名：epgid.png 或 净化频道名.png
-    final fileName = epgId != null ? '$epgId.png' : '${_sanitizeFileName(channelName)}.png';
+    // ① 修改：文件名去掉 _v3
+    final cacheName = epgId != null ? '$epgId.png' : '${_sanitizeFileName(channelName)}.png';
     final logoDir = await _getLogoDir();
-    final cacheFile = File(p.join(logoDir.path, fileName));
+    final cacheFile = File(p.join(logoDir.path, cacheName));
 
     if (await cacheFile.exists()) {
       _logoResultCache[channelName] = cacheFile;
@@ -138,16 +138,16 @@ class LogoService {
       return cacheFile;
     }
 
-    if (_pendingDownloads.containsKey(fileName)) {
-      final result = await _pendingDownloads[fileName]!;
+    if (_pendingDownloads.containsKey(cacheName)) {
+      final result = await _pendingDownloads[cacheName]!;
       _logoResultCache[channelName] = result;
       if (epgId != null) _epgIdLogoCache[epgId] = result;
       return result;
     }
 
-    LogService.write('Logo: $channelName 开始处理 $fileName');
-    final downloadTask = _downloadAndProcess(channelName, fileName, fallbackUrl: fallbackUrl);
-    _pendingDownloads[fileName] = downloadTask;
+    LogService.write('Logo: $channelName 开始处理 $cacheName');
+    final downloadTask = _downloadFromSources(channelName, cacheName, fallbackUrl: fallbackUrl);
+    _pendingDownloads[cacheName] = downloadTask;
 
     try {
       final result = await downloadTask;
@@ -155,7 +155,7 @@ class LogoService {
       if (epgId != null) _epgIdLogoCache[epgId] = result;
       return result;
     } finally {
-      _pendingDownloads.remove(fileName);
+      _pendingDownloads.remove(cacheName);
     }
   }
 
@@ -185,11 +185,11 @@ class LogoService {
     LogService.write('LogoService: 预加载完成');
   }
 
-  // ==================== 下载逻辑 ====================
+  // ==================== 下载逻辑（② 替换为 _downloadFromSources） ====================
 
-  Future<File?> _downloadAndProcess(String channelName, String fileName, {String? fallbackUrl}) async {
+  Future<File?> _downloadFromSources(String channelName, String cacheName, {String? fallbackUrl}) async {
     final logoDir = await _getLogoDir();
-    final cacheFile = File(p.join(logoDir.path, fileName));
+    final cacheFile = File(p.join(logoDir.path, cacheName));
 
     if (await cacheFile.exists()) {
       return cacheFile;
@@ -211,13 +211,21 @@ class LogoService {
           }
           break;
         case LogoSource.github:
+          // GitHub 使用 epgId 或频道名作为文件名
+          String? fileName;
+          final epgId = await _getEpgId(channelName);
+          if (epgId != null) {
+            fileName = '$epgId.png';
+          } else {
+            fileName = '${_sanitizeFileName(channelName)}.png';
+          }
+          sourceDesc = 'GitHub';
           final token = await ConfigService.getGitHubToken();
           final url = '$_baseLogoUrl$fileName';
           final headers = <String, String>{};
           if (token != null && token.isNotEmpty) {
             headers['Authorization'] = 'token $token';
           }
-          sourceDesc = 'GitHub';
           imageBytes = await _fetchBytes(url, headers: headers);
           break;
         case LogoSource.epg:
@@ -234,12 +242,12 @@ class LogoService {
           if (source == LogoSource.github) {
             // GitHub 仓库的台标已经是透明的，直接保存
             await cacheFile.writeAsBytes(imageBytes);
-            LogService.write('Logo: $channelName 从 GitHub 直接保存 $fileName');
+            LogService.write('Logo: $channelName 从 GitHub 直接保存 $cacheName');
           } else {
             // M3U/EPG 来源：强制透明化处理
-            final processed = await _processTransparency(imageBytes, fileName);
+            final processed = await _processTransparency(imageBytes, cacheName);
             await cacheFile.writeAsBytes(processed);
-            LogService.write('Logo: $channelName 从 $sourceDesc 透明化处理后保存 $fileName');
+            LogService.write('Logo: $channelName 从 $sourceDesc 透明化处理后保存 $cacheName');
           }
           return cacheFile;
         } catch (e) {
@@ -254,9 +262,9 @@ class LogoService {
       final imageBytes = await _fetchBytes(fallbackUrl);
       if (imageBytes != null) {
         try {
-          final processed = await _processTransparency(imageBytes, fileName);
+          final processed = await _processTransparency(imageBytes, cacheName);
           await cacheFile.writeAsBytes(processed);
-          LogService.write('Logo: $channelName fallbackUrl 透明化处理后保存 $fileName');
+          LogService.write('Logo: $channelName fallbackUrl 透明化处理后保存 $cacheName');
           return cacheFile;
         } catch (e) {
           LogService.write('Logo: $channelName fallbackUrl 处理失败 - $e');
@@ -280,102 +288,57 @@ class LogoService {
     return null;
   }
 
-  // ==================== 透明化处理（逐行复刻 Python 脚本） ====================
-
-  Future<img.Image> _decodeImage(Uint8List bytes) async {
-    img.Image? decoded;
-
-    try { decoded = img.decodeImage(bytes); } catch (_) {}
-    if (decoded != null) return decoded;
-
-    try { decoded = img.decodePng(bytes); } catch (_) {}
-    if (decoded != null) return decoded;
-
-    try { decoded = img.decodeJpg(bytes); } catch (_) {}
-    if (decoded != null) return decoded;
-
-    try { decoded = img.decodeWebP(bytes); } catch (_) {}
-    if (decoded != null) return decoded;
-
-    try { decoded = img.decodeGif(bytes); } catch (_) {}
-    if (decoded != null) return decoded;
-
-    try { decoded = img.decodeBmp(bytes); } catch (_) {}
-    if (decoded != null) return decoded;
-
-    // Flutter ui 兜底解码
-    try {
-      final codec = await ui.instantiateImageCodec(bytes);
-      final frame = await codec.getNextFrame();
-      final uiImage = frame.image;
-      final byteData = await uiImage.toByteData(format: ui.ImageByteFormat.rawRgba);
-      if (byteData != null) {
-        final raw = byteData.buffer.asUint8List();
-        decoded = img.Image(width: uiImage.width, height: uiImage.height, numChannels: 4);
-        for (int y = 0; y < uiImage.height; y++) {
-          for (int x = 0; x < uiImage.width; x++) {
-            final i = (y * uiImage.width + x) * 4;
-            decoded.setPixelRgba(x, y, raw[i], raw[i + 1], raw[i + 2], raw[i + 3]);
-          }
-        }
-      }
-      uiImage.dispose();
-    } catch (_) {}
-
-    if (decoded == null) {
-      throw Exception('无法解码图片');
-    }
-    return decoded;
-  }
+  // ==================== 透明化处理（③ 替换为新的 _processTransparency） ====================
 
   Future<Uint8List> _processTransparency(Uint8List imageBytes, String fileName) async {
-    final decoded = await _decodeImage(imageBytes);
+    img.Image? decoded;
 
-    // 复刻 Python get_background_color
-    final bgColor = _getBackgroundColor(decoded);
-    LogService.write('Logo: $fileName 背景色 RGB(${bgColor.r},${bgColor.g},${bgColor.b})');
+    // 解码
+    try { decoded = img.decodeImage(imageBytes); } catch (_) {}
+    try { decoded ??= img.decodePng(imageBytes); } catch (_) {}
+    try { decoded ??= img.decodeJpg(imageBytes); } catch (_) {}
+    try { decoded ??= img.decodeWebP(imageBytes); } catch (_) {}
+    try { decoded ??= img.decodeGif(imageBytes); } catch (_) {}
+    try { decoded ??= img.decodeBmp(imageBytes); } catch (_) {}
 
-    // 复刻 Python make_transparent：convert('RGBA') → 遍历 → 容差内 a=0
-    final rgba = decoded.convert(numChannels: 4);
-    int transparentCount = 0;
-
-    for (int y = 0; y < rgba.height; y++) {
-      for (int x = 0; x < rgba.width; x++) {
-        final p = rgba.getPixel(x, y);
-        if (p.a.toInt() == 0) continue;
-
-        final r = p.r.toInt();
-        final g = p.g.toInt();
-        final b = p.b.toInt();
-
-        final dr = r - bgColor.r;
-        final dg = g - bgColor.g;
-        final db = b - bgColor.b;
-        final dist = sqrt((dr * dr + dg * dg + db * db).toDouble());
-
-        if (dist <= _transparencyTolerance) {
-          rgba.setPixelRgba(x, y, r, g, b, 0);
-          transparentCount++;
+    if (decoded == null) {
+      try {
+        final codec = await ui.instantiateImageCodec(imageBytes);
+        final frame = await codec.getNextFrame();
+        final uiImage = frame.image;
+        final byteData = await uiImage.toByteData(format: ui.ImageByteFormat.rawRgba);
+        if (byteData != null) {
+          final bytes = byteData.buffer.asUint8List();
+          decoded = img.Image(width: uiImage.width, height: uiImage.height, numChannels: 4);
+          for (int y = 0; y < uiImage.height; y++) {
+            for (int x = 0; x < uiImage.width; x++) {
+              final i = (y * uiImage.width + x) * 4;
+              decoded.setPixelRgba(x, y, bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]);
+            }
+          }
         }
+        uiImage.dispose();
+      } catch (_) {
+        decoded = null;
       }
     }
 
-    LogService.write('Logo: $fileName $transparentCount/${rgba.width * rgba.height} 像素被透明化');
-    return Uint8List.fromList(img.encodePng(rgba));
-  }
+    if (decoded == null) {
+      LogService.write('Logo: 无法解码 $fileName');
+      return imageBytes;
+    }
 
-  /// 复刻 Python get_background_color：
-  /// 直接对原图采样（不 convert RGB，避免 Alpha 混合干扰），忽略透明像素，Counter 统计
-  _RgbColor _getBackgroundColor(img.Image image) {
-    final w = image.width;
-    final h = image.height;
-    final hasAlpha = image.numChannels >= 4;
+    // ========== 复刻 Python get_background_color ==========
+    // 注意：不对原图做 convert('RGB')，直接采样，忽略透明像素
+    final w = decoded.width;
+    final h = decoded.height;
+    final hasAlpha = decoded.numChannels >= 4;
 
     final samples = <List<int>>[];
 
     void addSample(int x, int y) {
-      final p = image.getPixel(x, y);
-      if (hasAlpha && p.a.toInt() == 0) return; // 忽略透明像素
+      final p = decoded.getPixel(x, y);
+      if (hasAlpha && p.a.toInt() == 0) return;
       samples.add([p.r.toInt(), p.g.toInt(), p.b.toInt()]);
     }
 
@@ -385,7 +348,7 @@ class LogoService {
     addSample(0, h - 1);
     addSample(w - 1, h - 1);
 
-    // 边缘采样（复刻 Python step）
+    // 边缘采样
     final stepX = max(1, w ~/ 20);
     final stepY = max(1, h ~/ 20);
     for (int x = 0; x < w; x += stepX) {
@@ -413,8 +376,52 @@ class LogoService {
       }
     });
 
+    if (mostCommon.isEmpty) {
+      LogService.write('Logo: $fileName 无法检测背景色，直接保存');
+      return Uint8List.fromList(img.encodePng(decoded.convert(numChannels: 4)));
+    }
+
     final parts = mostCommon.split(',');
-    return _RgbColor(int.parse(parts[0]), int.parse(parts[1]), int.parse(parts[2]));
+    final bgColor = _RgbColor(int.parse(parts[0]), int.parse(parts[1]), int.parse(parts[2]));
+    LogService.write('Logo: $fileName 背景色 RGB(${bgColor.r},${bgColor.g},${bgColor.b})');
+
+    // ========== 复刻 Python make_transparent ==========
+    final rgba = decoded.convert(numChannels: 4);
+    int transparentCount = 0;
+
+    for (int y = 0; y < rgba.height; y++) {
+      for (int x = 0; x < rgba.width; x++) {
+        final p = rgba.getPixel(x, y);
+        if (p.a.toInt() == 0) continue;
+
+        final dr = p.r.toInt() - bgColor.r;
+        final dg = p.g.toInt() - bgColor.g;
+        final db = p.b.toInt() - bgColor.b;
+        final dist = sqrt((dr * dr + dg * dg + db * db).toDouble());
+
+        if (dist <= _transparencyTolerance) {
+          rgba.setPixelRgba(x, y, p.r.toInt(), p.g.toInt(), p.b.toInt(), 0);
+          transparentCount++;
+        }
+      }
+    }
+
+    LogService.write('Logo: $fileName $transparentCount/${rgba.width * rgba.height} 像素透明化');
+
+    // ========== 验证：重新加载检查 Alpha 通道 ==========
+    final encoded = Uint8List.fromList(img.encodePng(rgba));
+    final verify = img.decodePng(encoded);
+    if (verify != null) {
+      int verifyTransparent = 0;
+      for (int y = 0; y < verify.height; y++) {
+        for (int x = 0; x < verify.width; x++) {
+          if (verify.getPixel(x, y).a.toInt() == 0) verifyTransparent++;
+        }
+      }
+      LogService.write('Logo: $fileName 验证通过，透明像素 $verifyTransparent');
+    }
+
+    return encoded;
   }
 
   String _sanitizeFileName(String name) {
