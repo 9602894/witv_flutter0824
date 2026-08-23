@@ -32,31 +32,16 @@ class _ChannelLogoState extends State<_ChannelLogo> {
     }
   }
 
-  // 修改 _load() —— 先走缓存，再尝试 fallback 处理
+  // 修改 _load() —— 使用 getLogoWithFallback，统一处理
   Future<void> _load() async {
     final service = LogoService();
-    
-    // 1. 先尝试从缓存/下载获取处理过的台标
-    final file = await service.getLogo(widget.channelName);
+    // 关键：用 getLogoWithFallback，确保 fallbackUrl 也经过本地处理
+    final file = await service.getLogoWithFallback(widget.channelName, widget.fallbackUrl);
     if (mounted && file != null && file.existsSync()) {
       setState(() => _logoFile = file);
-      return;
+    } else {
+      if (mounted) setState(() => _logoFile = null);
     }
-    
-    // 2. 如果 getLogo 失败，但有 fallbackUrl，把 fallbackUrl 也下载处理
-    if (widget.fallbackUrl != null && widget.fallbackUrl!.isNotEmpty) {
-      final processedFile = await service.downloadAndProcess(
-        widget.channelName, 
-        widget.fallbackUrl!,
-      );
-      if (mounted && processedFile != null && processedFile.existsSync()) {
-        setState(() => _logoFile = processedFile);
-        return;
-      }
-    }
-    
-    // 3. 都失败，显示默认图标
-    if (mounted) setState(() => _logoFile = null);
   }
 
   @override
@@ -69,8 +54,8 @@ class _ChannelLogoState extends State<_ChannelLogo> {
         errorBuilder: (_, __, ___) => const Icon(Icons.tv, color: Colors.white54, size: 24),
       );
     }
-    // 删除这里的 Image.network(fallbackUrl!) 直接显示逻辑
-    // fallbackUrl 已经在 _load() 中通过 downloadAndProcess 处理过了
+    // 删除原来的 Image.network(fallbackUrl!) 直接显示逻辑
+    // 所有图片必须经过本地处理，不处理就不显示
     return const Icon(Icons.tv, color: Colors.white54, size: 24);
   }
 }
