@@ -19,14 +19,17 @@ class EpgParser {
   static Map<String, String>? _nameToEpgidMap;
   static Map<String, List<EpgProgram>>? _memoryCache;
   static Map<String, String>? _iconCache;
-  static Map<String, String>? _allDisplayNameToIcon; // 所有频道的 display-name -> icon url
+  static Map<String, String>? _allDisplayNameToIcon;
+  static Map<String, String>? _allDisplayNameToChannelId;
 
   static bool _isWorking = false;
   static final ValueNotifier<int> epgUpdateCounter = ValueNotifier(0);
 
+  /// 【强制东八区】获取当前北京时间（不受设备时区/代理影响）
   static DateTime get beijingNow {
-    final utc = DateTime.now().toUtc();
-    return utc.add(const Duration(hours: 8));
+    final now = DateTime.now();
+    // 先转成UTC，再加8小时，确保始终是东八区
+    return now.toUtc().add(const Duration(hours: 8));
   }
 
   static DateTime toBeijing(DateTime dt) {
@@ -91,12 +94,13 @@ class EpgParser {
 
       LogService.write(
         'EPG: 提取完成 ${result.programs.length}频道 ${result.count}节目 '
-        '耗时 ${stopwatch.elapsedMilliseconds}ms 全部频道icon ${result.allDisplayNameToIcon.length}条',
+        '耗时 ${stopwatch.elapsedMilliseconds}ms icon ${result.allDisplayNameToIcon.length}条',
       );
 
       _memoryCache = result.programs;
       _iconCache = result.icons;
       _allDisplayNameToIcon = result.allDisplayNameToIcon;
+      _allDisplayNameToChannelId = result.allDisplayNameToChannelId;
       epgUpdateCounter.value++;
       LogService.write('EPG: 内存已更新（从本地文件）');
     } catch (e, stack) {
@@ -158,12 +162,13 @@ class EpgParser {
 
       LogService.write(
         'EPG: 提取完成 ${result.programs.length}频道 ${result.count}节目 '
-        '耗时 ${stopwatch.elapsedMilliseconds}ms 全部频道icon ${result.allDisplayNameToIcon.length}条',
+        '耗时 ${stopwatch.elapsedMilliseconds}ms icon ${result.allDisplayNameToIcon.length}条',
       );
 
       _memoryCache = result.programs;
       _iconCache = result.icons;
       _allDisplayNameToIcon = result.allDisplayNameToIcon;
+      _allDisplayNameToChannelId = result.allDisplayNameToChannelId;
       epgUpdateCounter.value++;
       LogService.write('EPG: 内存已更新');
 
@@ -190,6 +195,7 @@ class EpgParser {
     final displayNameToId = <String, String>{};
     final icons = <String, String>{};
     final allDisplayNameToIcon = <String, String>{};
+    final allDisplayNameToChannelId = <String, String>{};
 
     final xml = File(filePath).readAsStringSync();
     final channelBlocks = xml.split('</channel>');
@@ -214,7 +220,8 @@ class EpgParser {
       if (dnClose == -1) continue;
       final displayName = block.substring(dnTagEnd + 1, dnClose).trim();
 
-      // 收集所有频道的 icon（不限于白名单）
+      allDisplayNameToChannelId[displayName] = channelId;
+
       final iconIdx = block.indexOf('src="', tagEnd);
       if (iconIdx != -1) {
         final iconEnd = block.indexOf('"', iconIdx + 5);
@@ -288,9 +295,10 @@ class EpgParser {
       list.sort((a, b) => a.start.compareTo(b.start));
     }
 
-    return _ExtractResult(programMap, icons, allDisplayNameToIcon, count);
+    return _ExtractResult(programMap, icons, allDisplayNameToIcon, allDisplayNameToChannelId, count);
   }
 
+  /// 【修复】EPG文件中的时间已经是东八区，按东八区构造后转UTC存储
   static DateTime? _parseXmltvTime(String t) {
     try {
       String s = t.trim();
@@ -381,14 +389,16 @@ class EpgParser {
     return getChannelIcon(channelName);
   }
 
-  /// 通过 display-name 直接查询 EPG 中的 icon url（不限于 epg_data.json 白名单）
   static String? getIconUrlByDisplayNameSync(String displayName) {
     return _allDisplayNameToIcon?[displayName];
   }
 
-  /// EPG 文件中是否包含该 display-name
+  static String? getChannelIdByDisplayNameSync(String displayName) {
+    return _allDisplayNameToChannelId?[displayName];
+  }
+
   static bool hasDisplayNameInEpg(String displayName) {
-    return _allDisplayNameToIcon?.containsKey(displayName) ?? false;
+    return _allDisplayNameToChannelId?.containsKey(displayName) ?? false;
   }
 
   static Future<Map<String, String>> getNameToEpgId() async {
@@ -497,6 +507,7 @@ class _ExtractResult {
   final Map<String, List<EpgProgram>> programs;
   final Map<String, String> icons;
   final Map<String, String> allDisplayNameToIcon;
+  final Map<String, String> allDisplayNameToChannelId;
   final int count;
-  _ExtractResult(this.programs, this.icons, this.allDisplayNameToIcon, this.count);
+  _ExtractResult(this.programs, this.icons, this.allDisplayNameToIcon, this.allDisplayNameToChannelId, this.count);
 }
