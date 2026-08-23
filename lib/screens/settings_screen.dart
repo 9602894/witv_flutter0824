@@ -104,7 +104,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
       body: ListView(
         children: [
-          // ---------- 订阅源管理 ----------
           Card(
             margin: EdgeInsets.all(8),
             child: Padding(
@@ -171,7 +170,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
 
-          // ---------- EPG 订阅管理 ----------
           Card(
             margin: EdgeInsets.all(8),
             child: Padding(
@@ -219,7 +217,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
 
-          // ---------- GitHub 令牌设置 ----------
           Card(
             margin: EdgeInsets.all(8),
             child: Padding(
@@ -258,7 +255,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
 
-          // ---------- 台标来源设置 ----------
           Card(
             margin: EdgeInsets.all(8),
             child: Padding(
@@ -275,7 +271,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     trailing: Icon(Icons.chevron_right),
                     onTap: () => LogoSourceSettingDialog.show(context),
                   ),
-                  // 【新增】清除台标缓存按钮
                   ListTile(
                     leading: Icon(Icons.delete_forever, color: Colors.red),
                     title: Text('清除台标缓存', style: TextStyle(color: Colors.red)),
@@ -290,7 +285,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
 
-          // ---------- 解码器选择 ----------
           Card(
             margin: EdgeInsets.all(8),
             child: Padding(
@@ -326,7 +320,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
 
-          // ---------- 自动重连 ----------
           Card(
             margin: EdgeInsets.all(8),
             child: Padding(
@@ -346,7 +339,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
 
-          // ---------- 日志操作 ----------
           Card(
             margin: EdgeInsets.all(8),
             child: Padding(
@@ -381,7 +373,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
 
-          // ---------- 关于 ----------
           Card(
             margin: EdgeInsets.all(8),
             child: Padding(
@@ -405,7 +396,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  // ---------- 添加订阅源 ----------
   Future<void> _addSubscription() async {
     final name = _nameController.text.trim();
     final url = _urlController.text.trim();
@@ -440,7 +430,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  // ---------- 删除确认 ----------
   Future<void> _confirmDelete(Subscription sub) async {
     final confirm = await _showTransparentDialog<bool>(
       context: context,
@@ -458,7 +447,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  // ---------- 保存 GitHub 令牌 ----------
   Future<void> _saveToken() async {
     final token = _tokenController.text.trim();
     if (token.isEmpty) {
@@ -482,7 +470,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  // 【新增】清除台标缓存确认
   Future<void> _confirmClearLogoCache() async {
     final confirm = await _showTransparentDialog<bool>(
       context: context,
@@ -509,7 +496,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  // ---------- 导出日志 ----------
   Future<void> _exportLog() async {
     try {
       final file = await LogService.export();
@@ -529,7 +515,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  // ---------- 清空日志确认 ----------
   Future<void> _clearLogs() async {
     final confirm = await _showTransparentDialog<bool>(
       context: context,
@@ -556,7 +541,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  // ---------- 统一透明弹窗 ----------
   Future<T?> _showTransparentDialog<T>({
     required BuildContext context,
     required String title,
