@@ -90,13 +90,8 @@ class _HomeScreenState extends State<HomeScreen> {
   Timer? _digitTimer;
 
   // ---------- 自动加载标记 ----------
+  VoidCallback? _epgListener;   // ADDED
   bool _autoLoaded = false;
-
-  // ---------- EPG 更新监听（StreamSubscription 方式） ----------
-  StreamSubscription? _epgUpdateSub;
-
-  // ---------- EPG 更新监听（ValueNotifier 方式） ----------
-  VoidCallback? _epgListener;   // 新增
 
   // ============================================================
   // 工具函数（强制东八区）
@@ -120,18 +115,9 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _initAsync();
 
-    // StreamSubscription 方式：EPG 更新后自动刷新当前频道信息
-    _epgUpdateSub = EpgParser.onEpgUpdated.listen((_) {
-      if (!mounted) return;
-      LogService.write('EPG: UI 收到更新通知 (Stream)');
-      _updateEpgInfo();
-      if (isScheduleMode) setState(() {});
-    });
-
-    // ValueNotifier 方式：EPG 更新后自动刷新当前频道信息
+    // EPG 更新后自动刷新当前频道信息
     _epgListener = () {
       if (!mounted) return;
-      LogService.write('EPG: UI 收到更新通知 (ValueNotifier)');
       _updateEpgInfo();
       if (isScheduleMode) setState(() {});
     };
@@ -259,24 +245,15 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    if (_epgListener != null) {
+      EpgParser.epgUpdateCounter.removeListener(_epgListener!);
+    }
     _epgUpdateTimer?.cancel();
     _epgInfoTimer?.cancel();
     _retryTimer?.cancel();
     _digitTimer?.cancel();
     _focusNode.dispose();
     _saveLayoutConfig();
-
-    // 取消 StreamSubscription 监听
-    _epgUpdateSub?.cancel();
-
-    // 移除 ValueNotifier 监听
-    if (_epgListener != null) {
-      EpgParser.epgUpdateCounter.removeListener(_epgListener!);
-    }
-
-    // 释放 EPG 资源
-    EpgParser.dispose();
-
     super.dispose();
   }
 
