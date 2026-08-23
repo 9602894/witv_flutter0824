@@ -25,12 +25,8 @@ class EpgParser {
   static bool _isWorking = false;
   static final ValueNotifier<int> epgUpdateCounter = ValueNotifier(0);
 
-  /// 【强制东八区】获取当前北京时间（不受设备时区/代理影响）
-  static DateTime get beijingNow {
-    final now = DateTime.now();
-    // 先转成UTC，再加8小时，确保始终是东八区
-    return now.toUtc().add(const Duration(hours: 8));
-  }
+  /// 获取当前UTC时间（EPG节目时间已统一按UTC存储，可直接比较）
+  static DateTime get beijingNow => DateTime.now().toUtc();
 
   static DateTime toBeijing(DateTime dt) {
     return dt.toUtc().add(const Duration(hours: 8));
