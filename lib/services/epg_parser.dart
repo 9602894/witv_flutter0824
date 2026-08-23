@@ -29,6 +29,7 @@ class EpgParser {
   /// [强制东八区]获取当前北京时间（不受设备时区/代理影响）
   static DateTime get beijingNow {
     final now = DateTime.now();
+    // 先转成UTC，再加8小时，确保始终是东八区
     return now.toUtc().add(const Duration(hours: 8));
   }
 
@@ -302,6 +303,7 @@ class EpgParser {
     return _ExtractResult(programMap, icons, allDisplayNameToIcon, allDisplayNameToChannelId, allChannelIdToIcon, count);
   }
 
+  /// [修复]EPG文件中的时间已经是东八区，按东八区构造后转UTC存储
   static DateTime? _parseXmltvTime(String t) {
     try {
       String s = t.trim();
