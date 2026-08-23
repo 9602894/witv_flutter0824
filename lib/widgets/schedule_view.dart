@@ -15,9 +15,9 @@ class ScheduleView extends StatefulWidget {
   final bool isEditMode;
   final bool showLeft;
   final LogoService logoService;
-  final Future<List<EpgProgram>> Function(String)? getChannelPrograms; // 新增
-  final String Function(DateTime)? formatTime; // 新增
-  final DateTime? beijingNow; // 新增
+  final Future<List<EpgProgram>> Function(String)? getChannelPrograms;
+  final String Function(DateTime)? formatTime;
+  final DateTime? beijingNow;
 
   const ScheduleView({
     Key? key,
@@ -43,7 +43,7 @@ class ScheduleView extends StatefulWidget {
 class _ScheduleViewState extends State<ScheduleView> {
   Channel? _selectedChannel;
   List<EpgProgram> _programs = [];
-  VoidCallback? _epgListener;   // 新增字段
+  VoidCallback? _epgListener;
   bool _isLoading = false;
 
   @override
@@ -52,7 +52,6 @@ class _ScheduleViewState extends State<ScheduleView> {
     _selectedChannel = widget.selectedChannel;
     _loadPrograms();
 
-    // EPG 更新后自动刷新节目单
     _epgListener = () {
       if (mounted) _loadPrograms();
     };
@@ -79,7 +78,6 @@ class _ScheduleViewState extends State<ScheduleView> {
           _isLoading = false;
         });
       } else {
-        // 兼容旧方式
         final programs = await EpgParser.getProgramsByChannelName(_selectedChannel!.name);
         setState(() {
           _programs = programs;
@@ -93,7 +91,6 @@ class _ScheduleViewState extends State<ScheduleView> {
 
   @override
   void dispose() {
-    // 移除 EPG 更新监听
     if (_epgListener != null) {
       EpgParser.epgUpdateCounter.removeListener(_epgListener!);
     }
@@ -167,6 +164,7 @@ class _ScheduleViewState extends State<ScheduleView> {
                               fontSize: 14,
                             ),
                           ),
+                          // ===== 显示节目描述（已存在） =====
                           subtitle: program.description.isNotEmpty
                               ? Text(program.description,
                                   style: TextStyle(color: isPast ? Colors.white24 : Colors.white60, fontSize: 11),
