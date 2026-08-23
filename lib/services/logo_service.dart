@@ -319,7 +319,7 @@ class LogoService {
     return null;
   }
 
-  // ==================== 透明化处理核心（完全重写） ====================
+  // ==================== 透明化处理核心（强制处理，永不跳过） ====================
 
   Future<Uint8List> _processTransparency(Uint8List imageBytes, String fileName) async {
     img.Image? decoded;
@@ -369,78 +369,64 @@ class LogoService {
       return imageBytes;
     }
 
+    // 关键：不再判断"是否已透明"，所有图片强制处理
     final bgColor = _getBackgroundColor(decoded);
-    
-    if (bgColor == null) {
-      // 关键修复：即使判定为已透明，也强制转 RGBA 再保存
-      LogService.write('Logo: $fileName 判定为已透明，强制保存为 RGBA PNG');
-      final rgba = decoded.convert(numChannels: 4);
-      return Uint8List.fromList(img.encodePng(rgba));
-    }
-
     LogService.write('Logo: $fileName 背景色 RGB(${bgColor.r},${bgColor.g},${bgColor.b})');
+    
     final transparent = _makeTransparent(decoded, bgColor, _transparencyTolerance);
     return transparent;
   }
 
-  _RgbColor? _getBackgroundColor(img.Image image) {
+  // 永远返回一个背景色，绝不返回 null
+  _RgbColor _getBackgroundColor(img.Image image) {
     final w = image.width;
     final h = image.height;
     final hasAlpha = image.numChannels >= 4;
 
-    // ===== 1. 全图采样检测透明比例（>80% 才认为已透明）=====
-    if (hasAlpha) {
-      int transparentPixels = 0;
-      int totalSamples = 0;
-      final stepX = max(1, w ~/ 10);
-      final stepY = max(1, h ~/ 10);
-
-      for (int y = 0; y < h; y += stepY) {
-        for (int x = 0; x < w; x += stepX) {
-          totalSamples++;
-          if (image.getPixel(x, y).a.toInt() == 0) {
-            transparentPixels++;
-          }
-        }
-      }
-
-      if (totalSamples > 0) {
-        final ratio = transparentPixels / totalSamples;
-        LogService.write('Logo: 透明像素采样比例 ${(ratio * 100).toStringAsFixed(1)}%');
-        if (ratio > 0.8) {
-          return null; // 真正已透明
-        }
-      }
-    }
-
-    // ===== 2. 边缘采样获取背景色（忽略透明像素）=====
     final samples = <List<int>>[];
-    final stepX = max(1, w ~/ 20);
-    final stepY = max(1, h ~/ 20);
 
-    void addSample(int x, int y) {
+    void addPixel(int x, int y) {
       final px = image.getPixel(x, y);
-      if (hasAlpha && px.a.toInt() == 0) return; // 忽略透明像素
+      // 忽略已经是透明的像素，避免干扰背景色检测
+      if (hasAlpha && px.a.toInt() == 0) return;
       samples.add([px.r.toInt(), px.g.toInt(), px.b.toInt()]);
     }
 
     // 四角
-    addSample(0, 0);
-    addSample(w - 1, 0);
-    addSample(0, h - 1);
-    addSample(w - 1, h - 1);
+    addPixel(0, 0);
+    addPixel(w - 1, 0);
+    addPixel(0, h - 1);
+    addPixel(w - 1, h - 1);
 
-    // 边缘
+    // 边缘采样
+    final stepX = max(1, w ~/ 20);
+    final stepY = max(1, h ~/ 20);
     for (int x = 0; x < w; x += stepX) {
-      addSample(x, 0);
-      addSample(x, h - 1);
+      addPixel(x, 0);
+      addPixel(x, h - 1);
     }
     for (int y = 0; y < h; y += stepY) {
-      addSample(0, y);
-      addSample(w - 1, y);
+      addPixel(0, y);
+      addPixel(w - 1, y);
     }
 
-    if (samples.isEmpty) return null;
+    // 边缘采不到足够样本（比如全图只有中间有内容），扩展到全图
+    if (samples.length < 10) {
+      final fullStepX = max(1, w ~/ 10);
+      final fullStepY = max(1, h ~/ 10);
+      for (int y = 0; y < h; y += fullStepY) {
+        for (int x = 0; x < w; x += fullStepX) {
+          final px = image.getPixel(x, y);
+          if (hasAlpha && px.a.toInt() == 0) continue;
+          samples.add([px.r.toInt(), px.g.toInt(), px.b.toInt()]);
+        }
+      }
+    }
+
+    // 极端情况：全图都是透明的，返回白色（反正处理完也是全透明，无害）
+    if (samples.isEmpty) {
+      return _RgbColor(255, 255, 255);
+    }
 
     // 统计最常见的颜色
     final counter = <String, int>{};
@@ -458,48 +444,44 @@ class LogoService {
       }
     });
 
-    if (mostCommon.isEmpty) return null;
-
     final parts = mostCommon.split(',');
     return _RgbColor(int.parse(parts[0]), int.parse(parts[1]), int.parse(parts[2]));
   }
 
   Uint8List _makeTransparent(img.Image image, _RgbColor bgColor, int tolerance) {
     final rgba = image.convert(numChannels: 4);
-    
-    // 判断背景是否为浅色（白/灰白），用于兜底强制透明
-    final bgIsLight = bgColor.r >= 235 && bgColor.g >= 235 && bgColor.b >= 235;
-    
+
+    // 无条件兜底：所有接近纯白的像素强制透明
+    // 覆盖 #F5F5F5、#FAFAFA、#FEFEFE、#FFFFFF 等一切伪白
+    const int whiteThreshold = 245;
+
     int processed = 0;
     int madeTransparent = 0;
 
     for (int y = 0; y < rgba.height; y++) {
       for (int x = 0; x < rgba.width; x++) {
         final pixel = rgba.getPixel(x, y);
-        
-        // 已经是透明的，跳过
         if (pixel.a.toInt() == 0) continue;
-        
+
         processed++;
         final r = pixel.r.toInt();
         final g = pixel.g.toInt();
         final b = pixel.b.toInt();
-        
-        // 条件1：在背景色容差内（使用现有的 _colorDistanceInt）
+
+        // 条件1：在检测出的背景色容差内（使用已有的距离函数）
         final inBgTolerance = _colorDistanceInt(r, g, b, bgColor.r, bgColor.g, bgColor.b) <= tolerance;
-        
-        // 条件2：兜底 - 浅色背景时，强制把近白像素也透明
-        // threshold 245 确保 #F5F5F5、#FAFAFA、#FEFEFE 等全部透明
-        final forceWhiteTransparent = bgIsLight && r >= 245 && g >= 245 && b >= 245;
-        
-        if (inBgTolerance || forceWhiteTransparent) {
+
+        // 条件2：无条件强制透明 - 只要像素够白就透明，不判断背景色
+        final isNearWhite = r >= whiteThreshold && g >= whiteThreshold && b >= whiteThreshold;
+
+        if (inBgTolerance || isNearWhite) {
           pixel.a = 0;
           madeTransparent++;
         }
       }
     }
-    
-    LogService.write('Logo: 处理 $processed 个非透明像素，$madeTransparent 个被设为透明');
+
+    LogService.write('Logo: 处理 $processed 个像素，$madeTransparent 个被透明化');
     return Uint8List.fromList(img.encodePng(rgba));
   }
 
