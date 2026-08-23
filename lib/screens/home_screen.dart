@@ -484,6 +484,12 @@ class _HomeScreenState extends State<HomeScreen> {
     if (currentChannel != null) {
       _updateEpgInfo();
     }
+
+    // 频道列表加载完成后，如果EPG已就绪且未下载过台标，触发下载
+    if (channels.isNotEmpty && !_logoDownloadTriggered) {
+      _logoDownloadTriggered = true;
+      _logoService.downloadAllLogos(channels);
+    }
   }
 
   void _handleKeyEvent(RawKeyEvent event) {
@@ -597,7 +603,7 @@ class _HomeScreenState extends State<HomeScreen> {
       visible: _showEpgInfo,
       child: Container(
         margin: EdgeInsets.symmetric(
-          horizontal: MediaQuery.of(context).size.width * 0.05,
+          horizontal: MediaQuery.of(context).size.width * 0.15,
         ),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         decoration: const BoxDecoration(
