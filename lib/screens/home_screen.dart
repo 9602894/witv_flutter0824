@@ -80,7 +80,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
   VoidCallback? _epgListener;
   bool _autoLoaded = false;
-  bool _logoDownloadTriggered = false;
 
   DateTime get _beijingNow => EpgParser.beijingNow;
   String _formatTime(DateTime time) => EpgParser.formatBeijingTime(time);
@@ -98,11 +97,8 @@ class _HomeScreenState extends State<HomeScreen> {
       if (!mounted) return;
       _updateEpgInfo();
       if (isScheduleMode) setState(() {});
-      // EPG真正加载/更新完成后，如果频道已就绪且未下载过台标，触发下载
-      if (channels.isNotEmpty && !_logoDownloadTriggered) {
-        _logoDownloadTriggered = true;
-        _logoService.downloadAllLogos(channels);
-      }
+      // EPG加载/更新完成后，触发台标下载
+      _tryDownloadLogos();
     };
     EpgParser.epgUpdateCounter.addListener(_epgListener!);
   }
@@ -112,17 +108,42 @@ class _HomeScreenState extends State<HomeScreen> {
     await _initLayoutConfigFile();
     await _loadLayoutConfig();
 
+    // 先加载订阅源数据（从缓存）
+    final settings = Provider.of<SettingsService>(context, listen: false);
+    if (settings.subscriptions.isNotEmpty) {
+      final selectedSubs = settings.subscriptions.where((s) => s.selected).toList();
+      if (selectedSubs.isNotEmpty) {
+        await _loadSubscriptionData(selectedSubs.first);
+      } else {
+        await _loadSubscriptionData(settings.subscriptions.first);
+      }
+    }
+
+    // 如果没有配置台标来源，弹出设置对话框（阻塞等待用户选择）
     final hasLogoSource = await _logoService.hasConfiguredSource();
     if (!hasLogoSource && mounted) {
       LogService.write('Logo: 首次使用，引导用户设置台标来源');
       await LogoSourceSettingDialog.show(context, isFirstTime: true);
     }
 
+    // 用户设置完来源后，触发台标下载
+    _tryDownloadLogos();
+
     _initEpgScheduler();
     _startEpgInfoTimer();
     _loadEpgInBackground();
 
     if (mounted) setState(() => isLoading = false);
+  }
+
+  /// 尝试下载台标：有频道数据且配置了来源时才执行
+  void _tryDownloadLogos() {
+    if (channels.isEmpty) return;
+    _logoService.hasConfiguredSource().then((hasSource) {
+      if (hasSource && mounted) {
+        _logoService.downloadAllLogos(channels);
+      }
+    });
   }
 
   void _loadEpgInBackground() {
@@ -132,7 +153,6 @@ class _HomeScreenState extends State<HomeScreen> {
         await _updateEpgInfo();
         _showEpgInfoTemporarily();
       }
-      // 台标下载统一交给 _epgListener 处理，避免重复触发
     }).catchError((e, stack) {
       LogService.writeCrashLog('EPG后台加载失败: $e', stack);
     });
@@ -141,18 +161,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    if (!_autoLoaded && channels.isEmpty) {
-      final settings = Provider.of<SettingsService>(context);
-      if (settings.subscriptions.isNotEmpty) {
-        _autoLoaded = true;
-        final selectedSubs = settings.subscriptions.where((s) => s.selected).toList();
-        if (selectedSubs.isNotEmpty) {
-          _loadSubscriptionData(selectedSubs.first);
-        } else {
-          _loadSubscriptionData(settings.subscriptions.first);
-        }
-      }
-    }
+    // 订阅源已在 _initAsync 中加载，此处不再重复加载
   }
 
   Future<void> _initLayoutConfigFile() async {
@@ -484,12 +493,6 @@ class _HomeScreenState extends State<HomeScreen> {
     if (currentChannel != null) {
       _updateEpgInfo();
     }
-
-    // 频道列表加载完成后，如果EPG已就绪且未下载过台标，触发下载
-    if (channels.isNotEmpty && !_logoDownloadTriggered) {
-      _logoDownloadTriggered = true;
-      _logoService.downloadAllLogos(channels);
-    }
   }
 
   void _handleKeyEvent(RawKeyEvent event) {
@@ -582,7 +585,6 @@ class _HomeScreenState extends State<HomeScreen> {
     final current = _currentProgram;
     final next = _nextProgram;
 
-    // 计算距结束时间
     String? timeRemaining;
     if (current != null) {
       final now = EpgParser.beijingNow;
@@ -592,7 +594,6 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
 
-    // 标签数据
     final List<String> tags = [];
     if (currentSpeed > 0) {
       tags.add('${currentSpeed.toStringAsFixed(2)}MB/s');
@@ -615,11 +616,9 @@ class _HomeScreenState extends State<HomeScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
-              // 第一行：台标 + 频道名 + 标签 + 距结束
               Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // 台标
                   if (currentChannel != null)
                     ChannelLogo(
                       channelName: currentChannel!.name,
@@ -630,7 +629,6 @@ class _HomeScreenState extends State<HomeScreen> {
                   else
                     const SizedBox(width: 80, height: 50),
                   const SizedBox(width: 12),
-                  // 频道名
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -646,7 +644,6 @@ class _HomeScreenState extends State<HomeScreen> {
                       ],
                     ),
                   ),
-                  // 右上角标签和距结束
                   Column(
                     crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
@@ -671,7 +668,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 ],
               ),
               const SizedBox(height: 8),
-              // 当前节目
               if (current != null)
                 Text(
                   '正在播放：${EpgParser.formatBeijingTime(current.start)} - ${EpgParser.formatBeijingTime(current.stop)}  ${current.title}',
@@ -680,7 +676,6 @@ class _HomeScreenState extends State<HomeScreen> {
                     fontSize: 14,
                   ),
                 ),
-              // 描述（完整显示）
               if (current?.description?.isNotEmpty == true)
                 Padding(
                   padding: const EdgeInsets.only(top: 4),
@@ -701,7 +696,6 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
               const SizedBox(height: 4),
-              // 下一节目
               if (next != null)
                 Text(
                   '下一节目：${EpgParser.formatBeijingTime(next.start)} - ${EpgParser.formatBeijingTime(next.stop)}  ${next.title}',
