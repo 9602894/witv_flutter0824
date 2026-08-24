@@ -52,7 +52,6 @@ class LogoService {
   final Map<String, File?> _epgIdLogoCache = {};
 
   Map<String, String>? _nameToEpgId;
-  bool _nameMapLoaded = false;
   final Map<String, String> _m3uLogos = {};
 
   final Map<String, Future<File?>> _pendingDownloads = {};
@@ -114,7 +113,6 @@ class LogoService {
       _logoResultCache.clear();
       _epgIdLogoCache.clear();
       _nameToEpgId = null;
-      _nameMapLoaded = false;
       LogService.write('LogoService: 已清空所有台标缓存');
     } catch (e) {
       LogService.write('LogoService: 清空缓存失败: $e');
@@ -483,17 +481,11 @@ class LogoService {
     return dir;
   }
 
+  /// [修复] 每次都从 EpgParser 获取最新映射，避免首次加载时缓存空map导致永远找不到映射
   Future<String?> _getEpgId(String channelName) async {
-    if (!_nameMapLoaded) {
-      LogService.write('Logo: 加载 epg_data.json 名称映射...');
-      _nameToEpgId = await EpgParser.getNameToEpgId();
-      _nameMapLoaded = true;
-      LogService.write('Logo: 名称映射加载完成，共 ${_nameToEpgId?.length ?? 0} 条');
-    }
-    // 只查 epg_data.json 映射，返回 epgid（即 display-name）
+    _nameToEpgId = await EpgParser.getNameToEpgId();
     final epgid = _nameToEpgId?[channelName];
     if (epgid != null) return epgid;
-
     LogService.write('Logo: 未找到映射: $channelName');
     return null;
   }
