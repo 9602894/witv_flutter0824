@@ -85,11 +85,13 @@ class EpgParser {
     try {
       final dir = await getApplicationDocumentsDirectory();
       final xmlPath = '${dir.path}/$_epgXmlFile';
-      // 修改点 1：传完整的别名映射给 isolate
-      final nameMap = _nameToEpgidMap ?? {};
-      final needed = nameMap.keys.toSet().toList(); // 用 keys（所有别名），不是 values（epgid）
-      final result = await Isolate.run(() => _extractNeededPrograms(xmlPath, needed, nameMap));
 
+      // [修改1] 传完整的别名映射
+      final nameMap = _nameToEpgidMap ?? {};
+      final needed = nameMap.keys.toSet().toList(); // ← 用 keys，不是 values
+
+      final stopwatch = Stopwatch()..start();
+      final result = await Isolate.run(() => _extractNeededPrograms(xmlPath, needed, nameMap));
       stopwatch.stop();
 
       LogService.write(
@@ -156,7 +158,7 @@ class EpgParser {
       final size = await file.length();
       LogService.write('EPG: 下载完成 ${(size / 1024 / 1024).toStringAsFixed(1)}MB');
 
-      // 修改点 1：传完整的别名映射给 isolate
+      // [修改1] 传完整的别名映射
       final nameMap = _nameToEpgidMap ?? {};
       final needed = nameMap.keys.toSet().toList();
       final stopwatch = Stopwatch()..start();
@@ -197,7 +199,7 @@ class EpgParser {
   static _ExtractResult _extractNeededPrograms(
     String filePath,
     List<String> neededDisplayNames,
-    Map<String, String> nameToEpgIdMap, // 新增参数
+    Map<String, String> nameToEpgIdMap, // [修改2] 新增参数
   ) {
     final needed = Set<String>.from(neededDisplayNames);
     final displayNameToId = <String, String>{}; // key 为 epgid
@@ -222,7 +224,7 @@ class EpgParser {
       final idEnd = tag.indexOf('"', idIdx + 4);
       final channelId = tag.substring(idIdx + 4, idEnd);
 
-      // 修改点 3：遍历所有 display-name
+      // [修改3] 遍历所有 display-name
       final displayNames = <String>[];
       var searchStart = tagEnd;
       while (true) {
@@ -307,7 +309,7 @@ class EpgParser {
       final title = _extractTag(content, 'title');
       final desc = _extractTag(content, 'desc');
 
-      // 修改点 4：programMap 用 epgid 作为 key
+      // [修改4] 用 epgid 作为 programMap 的 key
       String? epgId;
       for (final entry in displayNameToId.entries) {
         if (entry.value == progChannelId) {
