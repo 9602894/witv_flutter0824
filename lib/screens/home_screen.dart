@@ -108,17 +108,6 @@ class _HomeScreenState extends State<HomeScreen> {
     await _initLayoutConfigFile();
     await _loadLayoutConfig();
 
-    // 先加载订阅源数据（从缓存）
-    final settings = Provider.of<SettingsService>(context, listen: false);
-    if (settings.subscriptions.isNotEmpty) {
-      final selectedSubs = settings.subscriptions.where((s) => s.selected).toList();
-      if (selectedSubs.isNotEmpty) {
-        await _loadSubscriptionData(selectedSubs.first);
-      } else {
-        await _loadSubscriptionData(settings.subscriptions.first);
-      }
-    }
-
     // 如果没有配置台标来源，弹出设置对话框（阻塞等待用户选择）
     final hasLogoSource = await _logoService.hasConfiguredSource();
     if (!hasLogoSource && mounted) {
@@ -126,7 +115,7 @@ class _HomeScreenState extends State<HomeScreen> {
       await LogoSourceSettingDialog.show(context, isFirstTime: true);
     }
 
-    // 用户设置完来源后，触发台标下载
+    // 用户设置完来源后，触发台标下载（此时订阅源可能已在 didChangeDependencies 中加载）
     _tryDownloadLogos();
 
     _initEpgScheduler();
@@ -161,7 +150,18 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    // 订阅源已在 _initAsync 中加载，此处不再重复加载
+    if (!_autoLoaded && channels.isEmpty) {
+      final settings = Provider.of<SettingsService>(context);
+      if (settings.subscriptions.isNotEmpty) {
+        _autoLoaded = true;
+        final selectedSubs = settings.subscriptions.where((s) => s.selected).toList();
+        if (selectedSubs.isNotEmpty) {
+          _loadSubscriptionData(selectedSubs.first);
+        } else {
+          _loadSubscriptionData(settings.subscriptions.first);
+        }
+      }
+    }
   }
 
   Future<void> _initLayoutConfigFile() async {
@@ -493,6 +493,9 @@ class _HomeScreenState extends State<HomeScreen> {
     if (currentChannel != null) {
       _updateEpgInfo();
     }
+
+    // 频道列表加载完成后，尝试下载台标（来源可能已配置）
+    _tryDownloadLogos();
   }
 
   void _handleKeyEvent(RawKeyEvent event) {
