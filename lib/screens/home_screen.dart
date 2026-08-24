@@ -360,6 +360,8 @@ class _HomeScreenState extends State<HomeScreen> {
     });
 
     _logoService.preloadAllLogos(channels);
+    // 切换分组后，下载新分组中尚未缓存的台标
+    _tryDownloadLogos();
     if (currentChannel != null) {
       _updateEpgInfo();
       _showEpgInfoTemporarily();
