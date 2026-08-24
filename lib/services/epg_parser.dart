@@ -26,13 +26,11 @@ class EpgParser {
   static bool _isWorking = false;
   static final ValueNotifier<int> epgUpdateCounter = ValueNotifier(0);
 
-  /// [强制东八区]获取当前北京时间（不受设备时区/代理影响）
-  static DateTime get beijingNow {
-    final now = DateTime.now();
-    // 先转成UTC，再加8小时，确保始终是东八区
-    return now.toUtc().add(const Duration(hours: 8));
-  }
+  /// [修正] 获取当前UTC时间，用于和EPG节目时间(UTC存储)直接比较
+  /// EPG节目时间已通过 _parseXmltvTime 转为UTC存储，因此比较基准也必须是UTC
+  static DateTime get beijingNow => DateTime.now().toUtc();
 
+  /// 将UTC时间转为北京时间显示
   static DateTime toBeijing(DateTime dt) {
     return dt.toUtc().add(const Duration(hours: 8));
   }
@@ -303,7 +301,6 @@ class EpgParser {
     return _ExtractResult(programMap, icons, allDisplayNameToIcon, allDisplayNameToChannelId, allChannelIdToIcon, count);
   }
 
-  /// [修复]EPG文件中的时间已经是东八区，按东八区构造后转UTC存储
   static DateTime? _parseXmltvTime(String t) {
     try {
       String s = t.trim();
