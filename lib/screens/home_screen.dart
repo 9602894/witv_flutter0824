@@ -38,6 +38,7 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _showEpgInfo = true;
   bool isEditMode = false;
   bool _showRightMenu = false;
+  bool _showExitDialog = false;
 
   double subWeight = 0.2;
   double groupWeight = 0.2;
@@ -514,6 +515,14 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
+    // 返回键处理（当退出对话框显示时）
+    if (key == LogicalKeyboardKey.goBack || key == LogicalKeyboardKey.escape) {
+      if (_showExitDialog) {
+        setState(() => _showExitDialog = false);
+        return;
+      }
+    }
+
     final digitKeys = [
       LogicalKeyboardKey.digit0, LogicalKeyboardKey.digit1,
       LogicalKeyboardKey.digit2, LogicalKeyboardKey.digit3,
@@ -541,7 +550,6 @@ class _HomeScreenState extends State<HomeScreen> {
     if (isEditMode) return;
 
     if (showChannelList && !isScheduleMode) {
-      // 频道列表显示时的导航
       if (key == LogicalKeyboardKey.arrowUp) {
         setState(() => _selectedIndex = _selectedIndex > 0 ? _selectedIndex - 1 : channels.length - 1);
       } else if (key == LogicalKeyboardKey.arrowDown) {
@@ -564,7 +572,6 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       }
     } else {
-      // 频道列表未显示时，直接换台
       if (key == LogicalKeyboardKey.arrowUp) {
         final currentIdx = currentChannel != null ? channels.indexOf(currentChannel!) : -1;
         final newIdx = currentIdx > 0 ? currentIdx - 1 : channels.length - 1;
@@ -852,6 +859,94 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  /// 退出/设置透明弹窗（参考酷9）
+  Widget _buildExitDialog() {
+    return Visibility(
+      visible: _showExitDialog,
+      child: GestureDetector(
+        onTap: () => setState(() => _showExitDialog = false),
+        child: Container(
+          color: Colors.black.withOpacity(0.5),
+          child: Center(
+            child: GestureDetector(
+              onTap: () {}, // 阻止点击穿透
+              child: Container(
+                width: 280,
+                padding: const EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.85),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.white.withOpacity(0.15)),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text(
+                      '退出应用？',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: ElevatedButton(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.grey[800],
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(vertical: 14),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                            ),
+                            onPressed: () {
+                              setState(() => _showExitDialog = false);
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(builder: (_) => SettingsScreen()),
+                              ).then((_) => setState(() {}));
+                            },
+                            child: const Text('设置', style: TextStyle(fontSize: 16)),
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: ElevatedButton(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.redAccent,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(vertical: 14),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                            ),
+                            onPressed: () => exit(0),
+                            child: const Text('退出', style: TextStyle(fontSize: 16)),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    TextButton(
+                      onPressed: () => setState(() => _showExitDialog = false),
+                      child: const Text(
+                        '取消',
+                        style: TextStyle(color: Colors.white54, fontSize: 14),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final screenHeight = MediaQuery.of(context).size.height;
@@ -887,9 +982,12 @@ class _HomeScreenState extends State<HomeScreen> {
             setState(() => _showRightMenu = false);
             return false;
           }
-          // 返回键激活设置（参考酷9）
-          Navigator.push(context, MaterialPageRoute(builder: (_) => SettingsScreen()))
-              .then((_) => setState(() {}));
+          if (_showExitDialog) {
+            setState(() => _showExitDialog = false);
+            return false;
+          }
+          // 没有任何窗口时，弹出退出/设置对话框（参考酷9）
+          setState(() => _showExitDialog = true);
           return false;
         },
         child: Scaffold(
@@ -1163,6 +1261,9 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   ),
                 ),
+
+              // 退出/设置透明弹窗
+              _buildExitDialog(),
 
               if (_showRightMenu)
                 Positioned(
