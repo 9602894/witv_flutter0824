@@ -83,9 +83,6 @@ class _HomeScreenState extends State<HomeScreen> {
   Timer? _channelNumberTimer;
 
   // 退出对话框焦点
-  final FocusNode _exitDialogSettingsFocus = FocusNode();
-  final FocusNode _exitDialogExitFocus = FocusNode();
-  final FocusNode _exitDialogCancelFocus = FocusNode();
   int _exitDialogSelectedIndex = 0;
 
   VoidCallback? _epgListener;
@@ -238,9 +235,6 @@ class _HomeScreenState extends State<HomeScreen> {
     _retryTimer?.cancel();
     _digitTimer?.cancel();
     _channelNumberTimer?.cancel();
-    _exitDialogSettingsFocus.dispose();
-    _exitDialogExitFocus.dispose();
-    _exitDialogCancelFocus.dispose();
     _focusNode.dispose();
     _saveLayoutConfig();
     super.dispose();
@@ -509,6 +503,12 @@ class _HomeScreenState extends State<HomeScreen> {
   void _handleKeyEvent(RawKeyEvent event) {
     if (event is! RawKeyDownEvent) return;
     final key = event.logicalKey;
+
+    // 退出对话框显示时，由对话框独占处理按键
+    if (_showExitDialog) {
+      _handleExitDialogKey(event);
+      return;
+    }
 
     if (key == LogicalKeyboardKey.contextMenu) {
       Navigator.push(context, MaterialPageRoute(builder: (_) => SettingsScreen()))
@@ -870,36 +870,15 @@ class _HomeScreenState extends State<HomeScreen> {
         } else {
           _exitDialogSelectedIndex = _exitDialogSelectedIndex < 2 ? _exitDialogSelectedIndex + 1 : 0;
         }
-        _updateExitDialogFocus();
       });
     } else if (key == LogicalKeyboardKey.arrowUp) {
-      setState(() {
-        _exitDialogSelectedIndex = 0;
-        _updateExitDialogFocus();
-      });
+      setState(() => _exitDialogSelectedIndex = 0);
     } else if (key == LogicalKeyboardKey.arrowDown) {
-      setState(() {
-        _exitDialogSelectedIndex = 2;
-        _updateExitDialogFocus();
-      });
+      setState(() => _exitDialogSelectedIndex = 2);
     } else if (key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.select) {
       _executeExitDialogAction();
     } else if (key == LogicalKeyboardKey.goBack || key == LogicalKeyboardKey.escape) {
       setState(() => _showExitDialog = false);
-    }
-  }
-
-  void _updateExitDialogFocus() {
-    switch (_exitDialogSelectedIndex) {
-      case 0:
-        _exitDialogSettingsFocus.requestFocus();
-        break;
-      case 1:
-        _exitDialogExitFocus.requestFocus();
-        break;
-      case 2:
-        _exitDialogCancelFocus.requestFocus();
-        break;
     }
   }
 
@@ -924,212 +903,165 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildExitDialog() {
     if (!_showExitDialog) return const SizedBox.shrink();
 
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_showExitDialog && mounted) {
-        _exitDialogSelectedIndex = 0;
-        _exitDialogSettingsFocus.requestFocus();
-      }
-    });
-
-    return RawKeyboardListener(
-      focusNode: FocusNode(),
-      onKey: _handleExitDialogKey,
-      autofocus: true,
-      child: GestureDetector(
-        onTap: () => setState(() => _showExitDialog = false),
-        child: Container(
-          color: Colors.black.withOpacity(0.5),
-          child: Center(
-            child: GestureDetector(
-              onTap: () {},
-              child: Container(
-                width: 320,
-                padding: const EdgeInsets.all(24),
-                decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.9),
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: Colors.white.withOpacity(0.2)),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.5),
-                      blurRadius: 20,
-                      spreadRadius: 5,
-                    ),
-                  ],
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(
-                      Icons.live_tv,
-                      color: Colors.white70,
-                      size: 48,
-                    ),
-                    const SizedBox(height: 16),
-                    const Text(
-                      'Witv 播放器',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    const Text(
-                      '您想要做什么？',
-                      style: TextStyle(
-                        color: Colors.white70,
-                        fontSize: 14,
-                      ),
-                    ),
-                    const SizedBox(height: 28),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Focus(
-                            focusNode: _exitDialogSettingsFocus,
-                            child: Builder(
-                              builder: (context) {
-                                final hasFocus = Focus.of(context).hasFocus;
-                                return AnimatedContainer(
-                                  duration: const Duration(milliseconds: 150),
-                                  decoration: BoxDecoration(
-                                    color: hasFocus ? Colors.blue.withOpacity(0.3) : Colors.grey[800],
-                                    borderRadius: BorderRadius.circular(10),
-                                    border: Border.all(
-                                      color: hasFocus ? Colors.blue : Colors.transparent,
-                                      width: 2,
-                                    ),
-                                  ),
-                                  child: Material(
-                                    color: Colors.transparent,
-                                    child: InkWell(
-                                      onTap: () {
-                                        _exitDialogSelectedIndex = 0;
-                                        _executeExitDialogAction();
-                                      },
-                                      borderRadius: BorderRadius.circular(10),
-                                      child: Container(
-                                        padding: const EdgeInsets.symmetric(vertical: 16),
-                                        alignment: Alignment.center,
-                                        child: Column(
-                                          children: [
-                                            Icon(
-                                              Icons.settings,
-                                              color: hasFocus ? Colors.blue : Colors.white70,
-                                              size: 28,
-                                            ),
-                                            const SizedBox(height: 6),
-                                            Text(
-                                              '设置',
-                                              style: TextStyle(
-                                                color: hasFocus ? Colors.blue : Colors.white,
-                                                fontSize: 15,
-                                                fontWeight: hasFocus ? FontWeight.bold : FontWeight.normal,
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                );
-                              },
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 16),
-                        Expanded(
-                          child: Focus(
-                            focusNode: _exitDialogExitFocus,
-                            child: Builder(
-                              builder: (context) {
-                                final hasFocus = Focus.of(context).hasFocus;
-                                return AnimatedContainer(
-                                  duration: const Duration(milliseconds: 150),
-                                  decoration: BoxDecoration(
-                                    color: hasFocus ? Colors.red.withOpacity(0.3) : Colors.grey[800],
-                                    borderRadius: BorderRadius.circular(10),
-                                    border: Border.all(
-                                      color: hasFocus ? Colors.red : Colors.transparent,
-                                      width: 2,
-                                    ),
-                                  ),
-                                  child: Material(
-                                    color: Colors.transparent,
-                                    child: InkWell(
-                                      onTap: () {
-                                        _exitDialogSelectedIndex = 1;
-                                        _executeExitDialogAction();
-                                      },
-                                      borderRadius: BorderRadius.circular(10),
-                                      child: Container(
-                                        padding: const EdgeInsets.symmetric(vertical: 16),
-                                        alignment: Alignment.center,
-                                        child: Column(
-                                          children: [
-                                            Icon(
-                                              Icons.power_settings_new,
-                                              color: hasFocus ? Colors.red : Colors.white70,
-                                              size: 28,
-                                            ),
-                                            const SizedBox(height: 6),
-                                            Text(
-                                              '退出',
-                                              style: TextStyle(
-                                                color: hasFocus ? Colors.red : Colors.white,
-                                                fontSize: 15,
-                                                fontWeight: hasFocus ? FontWeight.bold : FontWeight.normal,
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                );
-                              },
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    Focus(
-                      focusNode: _exitDialogCancelFocus,
-                      child: Builder(
-                        builder: (context) {
-                          final hasFocus = Focus.of(context).hasFocus;
-                          return Material(
-                            color: Colors.transparent,
-                            child: InkWell(
-                              onTap: () => setState(() => _showExitDialog = false),
-                              borderRadius: BorderRadius.circular(8),
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 24),
-                                decoration: BoxDecoration(
-                                  borderRadius: BorderRadius.circular(8),
-                                  border: Border.all(
-                                    color: hasFocus ? Colors.white54 : Colors.transparent,
-                                    width: 1,
-                                  ),
-                                ),
-                                child: Text(
-                                  '取消',
-                                  style: TextStyle(
-                                    color: hasFocus ? Colors.white : Colors.white54,
-                                    fontSize: 14,
-                                  ),
-                                ),
-                              ),
-                            ),
-                          );
-                        },
-                      ),
-                    ),
-                  ],
-                ),
+    return GestureDetector(
+      onTap: () => setState(() => _showExitDialog = false),
+      child: Container(
+        color: Colors.black.withOpacity(0.5),
+        child: Center(
+          child: GestureDetector(
+            onTap: () {},
+            child: Container(
+              width: 320,
+              padding: const EdgeInsets.all(24),
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.9),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: Colors.white.withOpacity(0.2)),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.5),
+                    blurRadius: 20,
+                    spreadRadius: 5,
+                  ),
+                ],
               ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(
+                    Icons.live_tv,
+                    color: Colors.white70,
+                    size: 48,
+                  ),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'Witv 播放器',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    '您想要做什么？',
+                    style: TextStyle(
+                      color: Colors.white70,
+                      fontSize: 14,
+                    ),
+                  ),
+                  const SizedBox(height: 28),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _buildExitDialogButton(
+                          index: 0,
+                          icon: Icons.settings,
+                          label: '设置',
+                          activeColor: Colors.blue,
+                          onTap: () {
+                            _exitDialogSelectedIndex = 0;
+                            _executeExitDialogAction();
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 16),
+                      Expanded(
+                        child: _buildExitDialogButton(
+                          index: 1,
+                          icon: Icons.power_settings_new,
+                          label: '退出',
+                          activeColor: Colors.red,
+                          onTap: () {
+                            _exitDialogSelectedIndex = 1;
+                            _executeExitDialogAction();
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  _buildExitDialogCancelButton(),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildExitDialogButton({
+    required int index,
+    required IconData icon,
+    required String label,
+    required Color activeColor,
+    required VoidCallback onTap,
+  }) {
+    final isSelected = _exitDialogSelectedIndex == index;
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 150),
+      decoration: BoxDecoration(
+        color: isSelected ? activeColor.withOpacity(0.3) : Colors.grey[800],
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: isSelected ? activeColor : Colors.transparent,
+          width: 2,
+        ),
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(10),
+          child: Container(
+            padding: const EdgeInsets.symmetric(vertical: 16),
+            alignment: Alignment.center,
+            child: Column(
+              children: [
+                Icon(
+                  icon,
+                  color: isSelected ? activeColor : Colors.white70,
+                  size: 28,
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  label,
+                  style: TextStyle(
+                    color: isSelected ? activeColor : Colors.white,
+                    fontSize: 15,
+                    fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildExitDialogCancelButton() {
+    final isSelected = _exitDialogSelectedIndex == 2;
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: () => setState(() => _showExitDialog = false),
+        borderRadius: BorderRadius.circular(8),
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 24),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: isSelected ? Colors.white54 : Colors.transparent,
+              width: 1,
+            ),
+          ),
+          child: Text(
+            '取消',
+            style: TextStyle(
+              color: isSelected ? Colors.white : Colors.white54,
+              fontSize: 14,
             ),
           ),
         ),
