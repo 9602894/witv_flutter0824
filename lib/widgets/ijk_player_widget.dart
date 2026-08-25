@@ -51,7 +51,8 @@ class _IjkPlayerWidgetState extends State<IjkPlayerWidget> {
   @override
   Widget build(BuildContext context) {
     return AndroidView(
-      viewType: 'com.example.witv/ijkplayer',
+      // 修复：viewType 必须与 MainActivity.kt 中注册的名字一致
+      viewType: 'ijkplayer_view',
       creationParams: <String, dynamic>{
         'url': widget.url,
         'decoderIndex': widget.decoderIndex,
