@@ -554,7 +554,14 @@ class _HomeScreenState extends State<HomeScreen> {
       setState(() => _channelNumberInput = '');
     }
 
-    if (channels.isEmpty) return;
+    if (channels.isEmpty) {
+      // 修复：没有频道时按 OK 键进入设置，引导用户添加订阅源
+      if (key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.select) {
+        Navigator.push(context, MaterialPageRoute(builder: (_) => SettingsScreen()))
+            .then((_) => setState(() {}));
+      }
+      return;
+    }
     if (isEditMode) return;
 
     if (showChannelList && !isScheduleMode) {
@@ -1079,6 +1086,13 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // 修复：确保焦点在 Flutter 侧，防止 AndroidView 抢走
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && !_focusNode.hasFocus) {
+        _focusNode.requestFocus();
+      }
+    });
+
     final screenHeight = MediaQuery.of(context).size.height;
     _scheduleButtonInitTop = (screenHeight - 80) / 2;
     _channelButtonInitTop = (screenHeight - 80) / 2;
@@ -1124,6 +1138,41 @@ class _HomeScreenState extends State<HomeScreen> {
         child: Scaffold(
           body: Stack(
             children: [
+              // 修复：没有频道数据时显示空状态提示
+              if (channels.isEmpty && !isLoading)
+                Positioned.fill(
+                  child: Container(
+                    color: Colors.black87,
+                    child: Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.tv_off, color: Colors.white54, size: 64),
+                          const SizedBox(height: 16),
+                          const Text(
+                            '暂无频道数据',
+                            style: TextStyle(color: Colors.white, fontSize: 20),
+                          ),
+                          const SizedBox(height: 8),
+                          const Text(
+                            '请按【OK键】或点击屏幕进入设置添加直播源',
+                            style: TextStyle(color: Colors.white70, fontSize: 14),
+                          ),
+                          const SizedBox(height: 24),
+                          ElevatedButton.icon(
+                            icon: const Icon(Icons.settings),
+                            label: const Text('进入设置'),
+                            onPressed: () {
+                              Navigator.push(context, MaterialPageRoute(builder: (_) => SettingsScreen()))
+                                  .then((_) => setState(() {}));
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+
               if (currentChannel != null && currentChannel!.url.isNotEmpty)
                 Positioned.fill(
                   child: IjkPlayerWidget(
