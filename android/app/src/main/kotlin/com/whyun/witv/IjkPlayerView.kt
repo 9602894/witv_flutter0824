@@ -29,6 +29,13 @@ class IjkPlayerView(
     init {
         decoderIndex = (creationParams?.get("decoderIndex") as? Int) ?: 0
 
+        // 修复：从 creationParams 读取 url，否则播放器永远收不到视频地址
+        val initialUrl = creationParams?.get("url") as? String
+        if (initialUrl != null) {
+            currentUrl = initialUrl
+            pendingUrl = initialUrl
+        }
+
         methodChannel.setMethodCallHandler { call, result ->
             when (call.method) {
                 "setUrl" -> {
