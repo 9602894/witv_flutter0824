@@ -78,6 +78,10 @@ class _HomeScreenState extends State<HomeScreen> {
   String _digitBuffer = '';
   Timer? _digitTimer;
 
+  // 频道号输入提示
+  String _channelNumberInput = '';
+  Timer? _channelNumberTimer;
+
   VoidCallback? _epgListener;
   bool _autoLoaded = false;
 
@@ -97,7 +101,6 @@ class _HomeScreenState extends State<HomeScreen> {
       if (!mounted) return;
       _updateEpgInfo();
       if (isScheduleMode) setState(() {});
-      // EPG加载/更新完成后，触发台标下载
       _tryDownloadLogos();
     };
     EpgParser.epgUpdateCounter.addListener(_epgListener!);
@@ -108,16 +111,13 @@ class _HomeScreenState extends State<HomeScreen> {
     await _initLayoutConfigFile();
     await _loadLayoutConfig();
 
-    // 如果没有配置台标来源，弹出设置对话框（阻塞等待用户选择）
     final hasLogoSource = await _logoService.hasConfiguredSource();
     if (!hasLogoSource && mounted) {
       LogService.write('Logo: 首次使用，引导用户设置台标来源');
       await LogoSourceSettingDialog.show(context, isFirstTime: true);
     }
 
-    // 用户设置完来源后，触发台标下载（此时订阅源可能已在 didChangeDependencies 中加载）
     _tryDownloadLogos();
-
     _initEpgScheduler();
     _startEpgInfoTimer();
     _loadEpgInBackground();
@@ -125,7 +125,6 @@ class _HomeScreenState extends State<HomeScreen> {
     if (mounted) setState(() => isLoading = false);
   }
 
-  /// 尝试下载台标：有频道数据且配置了来源时才执行
   void _tryDownloadLogos() {
     if (channels.isEmpty) return;
     _logoService.hasConfiguredSource().then((hasSource) {
@@ -236,6 +235,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _epgInfoTimer?.cancel();
     _retryTimer?.cancel();
     _digitTimer?.cancel();
+    _channelNumberTimer?.cancel();
     _focusNode.dispose();
     _saveLayoutConfig();
     super.dispose();
@@ -330,6 +330,8 @@ class _HomeScreenState extends State<HomeScreen> {
     _cancelRetry();
     _digitBuffer = '';
     _digitTimer?.cancel();
+    _channelNumberTimer?.cancel();
+    _channelNumberInput = '';
 
     setState(() {
       currentChannel = ch;
@@ -348,6 +350,8 @@ class _HomeScreenState extends State<HomeScreen> {
     _cancelRetry();
     _digitBuffer = '';
     _digitTimer?.cancel();
+    _channelNumberTimer?.cancel();
+    _channelNumberInput = '';
 
     setState(() {
       currentGroup = groupName;
@@ -360,7 +364,6 @@ class _HomeScreenState extends State<HomeScreen> {
     });
 
     _logoService.preloadAllLogos(channels);
-    // 切换分组后，下载新分组中尚未缓存的台标
     _tryDownloadLogos();
     if (currentChannel != null) {
       _updateEpgInfo();
@@ -495,16 +498,22 @@ class _HomeScreenState extends State<HomeScreen> {
     if (currentChannel != null) {
       _updateEpgInfo();
     }
-
-    // 频道列表加载完成后，尝试下载台标（来源可能已配置）
     _tryDownloadLogos();
   }
 
+  /// 增强遥控器按键处理
   void _handleKeyEvent(RawKeyEvent event) {
     if (event is! RawKeyDownEvent) return;
-    if (!showChannelList || isEditMode || isScheduleMode) return;
 
     final key = event.logicalKey;
+
+    // 菜单键直接打开设置
+    if (key == LogicalKeyboardKey.contextMenu) {
+      Navigator.push(context, MaterialPageRoute(builder: (_) => SettingsScreen()))
+          .then((_) => setState(() {}));
+      return;
+    }
+
     final digitKeys = [
       LogicalKeyboardKey.digit0, LogicalKeyboardKey.digit1,
       LogicalKeyboardKey.digit2, LogicalKeyboardKey.digit3,
@@ -513,42 +522,81 @@ class _HomeScreenState extends State<HomeScreen> {
       LogicalKeyboardKey.digit8, LogicalKeyboardKey.digit9,
     ];
     if (digitKeys.contains(key)) {
-      _digitTimer?.cancel();
-      _digitBuffer += key.keyLabel;
-      _digitTimer = Timer(const Duration(milliseconds: 1500), () {
-        _jumpToChannelNumber(_digitBuffer);
-        _digitBuffer = '';
+      _channelNumberTimer?.cancel();
+      setState(() => _channelNumberInput += key.keyLabel);
+      _channelNumberTimer = Timer(const Duration(milliseconds: 1500), () {
+        _jumpToChannelNumber(_channelNumberInput);
+        setState(() => _channelNumberInput = '');
       });
       return;
     }
 
-    if (_digitBuffer.isNotEmpty) {
-      _digitTimer?.cancel();
-      _jumpToChannelNumber(_digitBuffer);
-      _digitBuffer = '';
+    if (_channelNumberInput.isNotEmpty) {
+      _channelNumberTimer?.cancel();
+      _jumpToChannelNumber(_channelNumberInput);
+      setState(() => _channelNumberInput = '');
     }
 
     if (channels.isEmpty) return;
+    if (isEditMode) return;
 
-    if (key == LogicalKeyboardKey.arrowUp) {
-      setState(() => _selectedIndex = _selectedIndex > 0 ? _selectedIndex - 1 : channels.length - 1);
-    } else if (key == LogicalKeyboardKey.arrowDown) {
-      setState(() => _selectedIndex = _selectedIndex < channels.length - 1 ? _selectedIndex + 1 : 0);
-    } else if (key == LogicalKeyboardKey.arrowLeft) {
-      if (groups.isNotEmpty) {
-        final currentIdx = groups.indexOf(currentGroup!);
-        final prevIdx = (currentIdx - 1 + groups.length) % groups.length;
-        _switchToGroup(groups[prevIdx]);
+    if (showChannelList && !isScheduleMode) {
+      // 频道列表显示时的导航
+      if (key == LogicalKeyboardKey.arrowUp) {
+        setState(() => _selectedIndex = _selectedIndex > 0 ? _selectedIndex - 1 : channels.length - 1);
+      } else if (key == LogicalKeyboardKey.arrowDown) {
+        setState(() => _selectedIndex = _selectedIndex < channels.length - 1 ? _selectedIndex + 1 : 0);
+      } else if (key == LogicalKeyboardKey.arrowLeft) {
+        if (groups.isNotEmpty) {
+          final currentIdx = groups.indexOf(currentGroup!);
+          final prevIdx = (currentIdx - 1 + groups.length) % groups.length;
+          _switchToGroup(groups[prevIdx]);
+        }
+      } else if (key == LogicalKeyboardKey.arrowRight) {
+        if (groups.isNotEmpty) {
+          final currentIdx = groups.indexOf(currentGroup!);
+          final nextIdx = (currentIdx + 1) % groups.length;
+          _switchToGroup(groups[nextIdx]);
+        }
+      } else if (key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.select) {
+        if (_selectedIndex >= 0 && _selectedIndex < channels.length) {
+          _switchChannel(channels[_selectedIndex]);
+        }
       }
-    } else if (key == LogicalKeyboardKey.arrowRight) {
-      if (groups.isNotEmpty) {
-        final currentIdx = groups.indexOf(currentGroup!);
-        final nextIdx = (currentIdx + 1) % groups.length;
-        _switchToGroup(groups[nextIdx]);
-      }
-    } else if (key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.select) {
-      if (_selectedIndex >= 0 && _selectedIndex < channels.length) {
-        _switchChannel(channels[_selectedIndex]);
+    } else {
+      // 频道列表未显示时，直接换台
+      if (key == LogicalKeyboardKey.arrowUp) {
+        final currentIdx = currentChannel != null ? channels.indexOf(currentChannel!) : -1;
+        final newIdx = currentIdx > 0 ? currentIdx - 1 : channels.length - 1;
+        if (newIdx >= 0 && newIdx < channels.length) {
+          _switchChannel(channels[newIdx]);
+        }
+      } else if (key == LogicalKeyboardKey.arrowDown) {
+        final currentIdx = currentChannel != null ? channels.indexOf(currentChannel!) : -1;
+        final newIdx = currentIdx < channels.length - 1 ? currentIdx + 1 : 0;
+        if (newIdx >= 0 && newIdx < channels.length) {
+          _switchChannel(channels[newIdx]);
+        }
+      } else if (key == LogicalKeyboardKey.arrowLeft) {
+        if (groups.isNotEmpty) {
+          final currentIdx = groups.indexOf(currentGroup!);
+          final prevIdx = (currentIdx - 1 + groups.length) % groups.length;
+          _switchToGroup(groups[prevIdx]);
+        }
+      } else if (key == LogicalKeyboardKey.arrowRight) {
+        if (groups.isNotEmpty) {
+          final currentIdx = groups.indexOf(currentGroup!);
+          final nextIdx = (currentIdx + 1) % groups.length;
+          _switchToGroup(groups[nextIdx]);
+        }
+      } else if (key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.select) {
+        setState(() {
+          showChannelList = true;
+          _showRightMenu = false;
+          _showEpgInfo = false;
+          _epgInfoHideTimer?.cancel();
+          _focusNode.requestFocus();
+        });
       }
     }
   }
@@ -557,14 +605,36 @@ class _HomeScreenState extends State<HomeScreen> {
     if (digits.isEmpty) return;
     final targetNumber = int.tryParse(digits);
     if (targetNumber == null) return;
+
     Channel? found;
-    for (final ch in channels) {
-      if (ch.number == targetNumber) {
-        found = ch;
-        break;
+    String? foundGroup;
+
+    if (_fullGroupMap != null) {
+      for (final entry in _fullGroupMap!.entries) {
+        for (final ch in entry.value) {
+          if (ch.number == targetNumber) {
+            found = ch;
+            foundGroup = entry.key;
+            break;
+          }
+        }
+        if (found != null) break;
       }
     }
+
+    if (found == null) {
+      for (final ch in channels) {
+        if (ch.number == targetNumber) {
+          found = ch;
+          break;
+        }
+      }
+    }
+
     if (found != null) {
+      if (foundGroup != null && foundGroup != currentGroup) {
+        _switchToGroup(foundGroup);
+      }
       _switchChannel(found);
     }
   }
@@ -646,6 +716,14 @@ class _HomeScreenState extends State<HomeScreen> {
                             fontWeight: FontWeight.bold,
                           ),
                         ),
+                        if (currentChannel?.number != null)
+                          Text(
+                            '频道号: ${currentChannel!.number}',
+                            style: const TextStyle(
+                              color: Colors.white70,
+                              fontSize: 13,
+                            ),
+                          ),
                       ],
                     ),
                   ),
@@ -724,11 +802,29 @@ class _HomeScreenState extends State<HomeScreen> {
       dense: true,
       selected: isSelected,
       selectedTileColor: Colors.white.withOpacity(0.1),
-      leading: ChannelLogo(
-        channelName: channel.name,
-        width: 36,
-        height: 24,
-        fit: BoxFit.contain,
+      leading: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (channel.number != null)
+            Container(
+              width: 40,
+              alignment: Alignment.center,
+              child: Text(
+                '${channel.number}',
+                style: TextStyle(
+                  color: isSelected ? Colors.yellow : Colors.white70,
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ChannelLogo(
+            channelName: channel.name,
+            width: 36,
+            height: 24,
+            fit: BoxFit.contain,
+          ),
+        ],
       ),
       title: Text(
         channel.name,
@@ -791,18 +887,9 @@ class _HomeScreenState extends State<HomeScreen> {
             setState(() => _showRightMenu = false);
             return false;
           }
-          final shouldExit = await showDialog<bool>(
-            context: context,
-            builder: (_) => AlertDialog(
-              title: const Text('提示'),
-              content: const Text('确定要退出应用吗？'),
-              actions: [
-                TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-                TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('确定')),
-              ],
-            ),
-          );
-          if (shouldExit == true) exit(0);
+          // 返回键激活设置（参考酷9）
+          Navigator.push(context, MaterialPageRoute(builder: (_) => SettingsScreen()))
+              .then((_) => setState(() {}));
           return false;
         },
         child: Scaffold(
@@ -1049,6 +1136,33 @@ class _HomeScreenState extends State<HomeScreen> {
                 bottom: 0,
                 child: _buildEpgInfoBar(),
               ),
+
+              // 频道号输入提示
+              if (_channelNumberInput.isNotEmpty)
+                Positioned(
+                  top: MediaQuery.of(context).size.height * 0.25,
+                  left: 0,
+                  right: 0,
+                  child: Center(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withOpacity(0.75),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.white.withOpacity(0.2)),
+                      ),
+                      child: Text(
+                        _channelNumberInput,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 56,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 4,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
 
               if (_showRightMenu)
                 Positioned(
