@@ -130,6 +130,33 @@ class _HomeScreenState extends State<HomeScreen> {
     _loadEpgInBackground();
 
     if (mounted) setState(() => isLoading = false);
+
+    // 修复：主动加载订阅源，解决 didChangeDependencies 时序竞争导致订阅源永不加载的问题
+    _autoLoadSubscription();
+  }
+
+  /// 修复：延迟等待 SettingsService 加载完成后自动加载订阅源
+  Future<void> _autoLoadSubscription() async {
+    // 最多等待 3 秒，让 SettingsService 完成初始化
+    for (var i = 0; i < 30; i++) {
+      await Future.delayed(const Duration(milliseconds: 100));
+      if (!mounted) return;
+
+      final settings = Provider.of<SettingsService>(context, listen: false);
+      if (settings.subscriptions.isNotEmpty) {
+        if (!_autoLoaded && channels.isEmpty) {
+          _autoLoaded = true;
+          final selectedSubs = settings.subscriptions.where((s) => s.selected).toList();
+          if (selectedSubs.isNotEmpty) {
+            await _loadSubscriptionData(selectedSubs.first);
+          } else {
+            await _loadSubscriptionData(settings.subscriptions.first);
+          }
+        }
+        return;
+      }
+    }
+    LogService.write('自动加载订阅源: 超时，未找到订阅源');
   }
 
   void _tryDownloadLogos() {
