@@ -22,6 +22,7 @@ class PlaylistParser {
     final lines = content.split('\n');
     final Map<String, List<Channel>> groupMap = {};
     String currentGroup = '默认分组';
+    int autoChannelNumber = 1;
 
     for (var i = 0; i < lines.length; i++) {
       String line = lines[i].trim();
@@ -40,6 +41,13 @@ class PlaylistParser {
           if (chnoStr != null && chnoStr.isNotEmpty) {
             channelNumber = int.tryParse(chnoStr);
           }
+        }
+        // 如果没有预设频道号，自动按顺序分配
+        if (channelNumber == null) {
+          channelNumber = autoChannelNumber++;
+        } else {
+          // 如果有预设频道号，确保后续自动编号从这个号之后开始
+          autoChannelNumber = channelNumber + 1;
         }
 
         if (i + 1 < lines.length) {
@@ -69,7 +77,7 @@ class PlaylistParser {
             name: name,
             url: url,
             group: currentGroup,
-            number: null,
+            number: autoChannelNumber++,
           ));
         }
       }
