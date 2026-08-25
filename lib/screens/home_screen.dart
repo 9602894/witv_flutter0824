@@ -96,6 +96,14 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _initAsync();
 
+    // 修复：启动后立即获取焦点，确保遥控器按键生效
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        _focusNode.requestFocus();
+        LogService.write('主页: 已请求焦点');
+      }
+    });
+
     _epgListener = () {
       if (!mounted) return;
       _updateEpgInfo();
@@ -798,6 +806,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ),
       ),
+    ),
     );
   }
 
@@ -1085,7 +1094,9 @@ class _HomeScreenState extends State<HomeScreen> {
     return RawKeyboardListener(
       focusNode: _focusNode,
       onKey: _handleKeyEvent,
-      child: WillPopScope(
+      child: ExcludeFocus(
+        // 修复：阻止所有子 widget 获取焦点，确保遥控器事件始终由主 FocusNode 处理
+        child: WillPopScope(
         onWillPop: () async {
           if (_showEpgInfo) {
             setState(() => _showEpgInfo = false);
@@ -1453,6 +1464,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ),
       ),
+    ),
     );
   }
 
