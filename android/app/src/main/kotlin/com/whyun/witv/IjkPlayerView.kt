@@ -1,9 +1,9 @@
 package com.whyun.witv
 
 import android.content.Context
-import android.graphics.SurfaceTexture
-import android.view.Surface
-import android.view.TextureView
+import android.graphics.PixelFormat
+import android.view.SurfaceHolder
+import android.view.SurfaceView
 import android.view.View
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.BinaryMessenger
@@ -17,8 +17,7 @@ class IjkPlayerView(
     messenger: BinaryMessenger
 ) : PlatformView {
 
-    // 修复：SurfaceView 会覆盖 Flutter UI，改用 TextureView
-    private val textureView: TextureView = TextureView(context)
+    private val surfaceView: SurfaceView = SurfaceView(context)
     private var ijkMediaPlayer: IjkMediaPlayer? = null
     private val methodChannel: MethodChannel = MethodChannel(messenger, "ijkplayer_view_$id")
     private var pendingUrl: String? = null
@@ -29,12 +28,10 @@ class IjkPlayerView(
     init {
         decoderIndex = (creationParams?.get("decoderIndex") as? Int) ?: 0
 
-        // 修复：从 creationParams 读取 url，否则播放器永远收不到视频地址
-        val initialUrl = creationParams?.get("url") as? String
-        if (initialUrl != null) {
-            currentUrl = initialUrl
-            pendingUrl = initialUrl
-        }
+        // 修复花屏①：SurfaceView 设为 MediaOverlay，避免被 Flutter UI 覆盖或闪烁
+        surfaceView.setZOrderMediaOverlay(true)
+        // 修复花屏②：固定像素格式，避免某些设备默认格式不匹配导致画面撕裂
+        surfaceView.holder.setFormat(PixelFormat.RGBA_8888)
 
         methodChannel.setMethodCallHandler { call, result ->
             when (call.method) {
@@ -62,40 +59,34 @@ class IjkPlayerView(
             }
         }
 
-        // 修复：使用 TextureView.SurfaceTextureListener 替代 SurfaceHolder.Callback
-        textureView.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-            override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
+        surfaceView.holder.addCallback(object : SurfaceHolder.Callback {
+            override fun surfaceCreated(holder: SurfaceHolder) {
                 isSurfaceReady = true
-                ijkMediaPlayer?.setSurface(Surface(surface))
+                ijkMediaPlayer?.setDisplay(holder)
                 pendingUrl?.let {
                     setUrl(it)
                     pendingUrl = null
                 }
             }
-            override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) {}
-            override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
+            override fun surfaceChanged(holder: SurfaceHolder, format: Int, w: Int, h: Int) {}
+            override fun surfaceDestroyed(holder: SurfaceHolder) {
                 isSurfaceReady = false
-                ijkMediaPlayer?.setSurface(null)
-                return true
+                ijkMediaPlayer?.setDisplay(null)
             }
-            override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {}
-        }
+        })
     }
 
     private fun createPlayer(): IjkMediaPlayer {
         val player = IjkMediaPlayer()
 
-        // 网络探测
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "probesize", 512 * 1024L)
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "analyzeduration", 200 * 1000L)
 
-        // 断线重连
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "reconnect", 1L)
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "reconnect_at_eof", 1L)
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "reconnect_streamed", 1L)
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "reconnect_delay_max", 5L)
 
-        // 网络
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "timeout", 10 * 1000 * 1000L)
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "dns_cache_clear", 1L)
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "fflags", "fastseek")
@@ -105,7 +96,6 @@ class IjkPlayerView(
             "file,http,https,tcp,tls,crypto,rtsp,rtp,udp,rtmp,rtmps,rtmpt,rtmpts"
         )
 
-        // 解码/渲染参数
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "video-pictq-size", 1L)
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "min-frames", 1L)
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "start-on-prepared", 1L)
@@ -117,14 +107,14 @@ class IjkPlayerView(
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "avsync-threshold", 100L)
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "max-fps", 60L)
 
-        // 解码器分支
         if (decoderIndex == 0) {
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec", 1L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-all-videos", 1L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-avc", 1L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-hevc", 1L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-auto-rotate", 1L)
-            player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-handle-resolution-change", 1L)
+            // 修复花屏③：华为 6110M 等盒子对动态分辨率支持不好，关闭它
+            player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-handle-resolution-change", 0L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "framedrop", 1L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_CODEC, "skip_loop_filter", 48L)
         } else {
@@ -136,7 +126,6 @@ class IjkPlayerView(
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "framedrop", 5L)
         }
 
-        // 回调
         player.setOnPreparedListener {
             player.start()
             methodChannel.invokeMethod("onInfo", mapOf("what" to 3))
@@ -160,9 +149,7 @@ class IjkPlayerView(
         val player = createPlayer()
         ijkMediaPlayer = player
         if (isSurfaceReady) {
-            textureView.surfaceTexture?.let {
-                player.setSurface(Surface(it))
-            }
+            player.setDisplay(surfaceView.holder)
         }
         try {
             player.dataSource = url
@@ -176,14 +163,13 @@ class IjkPlayerView(
         ijkMediaPlayer?.let {
             try {
                 it.stop()
-                it.setSurface(null)
+                it.setDisplay(null)
                 it.release()
             } catch (_: Exception) {}
         }
         ijkMediaPlayer = null
     }
 
-    // 修复：返回 TextureView
-    override fun getView(): View = textureView
+    override fun getView(): View = surfaceView
     override fun dispose() { releasePlayer() }
 }
