@@ -34,7 +34,6 @@ class _IjkPlayerWidgetState extends State<IjkPlayerWidget> {
   @override
   void didUpdateWidget(covariant IjkPlayerWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // 关键：URL 变化时不重建 PlatformView，直接发 setUrl 指令
     if (widget.url != oldWidget.url || widget.decoderIndex != oldWidget.decoderIndex) {
       _setUrl(widget.url, widget.decoderIndex);
     }
@@ -45,18 +44,14 @@ class _IjkPlayerWidgetState extends State<IjkPlayerWidget> {
     _speedTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
       try {
         final speed = await _channel?.invokeMethod<double>('getSpeed');
-        if (speed != null && mounted) {
-          widget.onSpeedUpdate?.call(speed);
-        }
+        if (speed != null && mounted) widget.onSpeedUpdate?.call(speed);
       } catch (_) {
-        // 原生未实现 getSpeed 时静默失败
         widget.onSpeedUpdate?.call(0.0);
       }
     });
   }
 
   void _onPlatformViewCreated(int id) {
-    // 修复：使用动态 channel 名称，与原生端匹配
     _channel = MethodChannel('ijkplayer_view_$id');
     _channel?.setMethodCallHandler((call) async {
       switch (call.method) {
@@ -66,10 +61,7 @@ class _IjkPlayerWidgetState extends State<IjkPlayerWidget> {
           break;
         case 'onInfo':
           final what = call.arguments['what'] as int?;
-          if (what == 3 && mounted) {
-            // 首帧渲染完成，隐藏加载圈
-            setState(() => _isLoading = false);
-          }
+          if (what == 3 && mounted) setState(() => _isLoading = false);
           break;
       }
     });
