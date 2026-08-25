@@ -79,19 +79,20 @@ class _HomeScreenState extends State<HomeScreen> {
   String _digitBuffer = '';
   Timer? _digitTimer;
 
-  // 频道号输入提示
   String _channelNumberInput = '';
   Timer? _channelNumberTimer;
+
+  // 退出对话框焦点
+  final FocusNode _exitDialogSettingsFocus = FocusNode();
+  final FocusNode _exitDialogExitFocus = FocusNode();
+  final FocusNode _exitDialogCancelFocus = FocusNode();
+  int _exitDialogSelectedIndex = 0;
 
   VoidCallback? _epgListener;
   bool _autoLoaded = false;
 
   DateTime get _beijingNow => EpgParser.beijingNow;
   String _formatTime(DateTime time) => EpgParser.formatBeijingTime(time);
-  String _getDate(DateTime time) {
-    final bj = EpgParser.toBeijing(time);
-    return '${bj.year}-${bj.month.toString().padLeft(2, '0')}-${bj.day.toString().padLeft(2, '0')}';
-  }
 
   @override
   void initState() {
@@ -505,20 +506,16 @@ class _HomeScreenState extends State<HomeScreen> {
     _tryDownloadLogos();
   }
 
-  /// 增强遥控器按键处理
   void _handleKeyEvent(RawKeyEvent event) {
     if (event is! RawKeyDownEvent) return;
-
     final key = event.logicalKey;
 
-    // 菜单键直接打开设置
     if (key == LogicalKeyboardKey.contextMenu) {
       Navigator.push(context, MaterialPageRoute(builder: (_) => SettingsScreen()))
           .then((_) => setState(() {}));
       return;
     }
 
-    // 返回键处理（当退出对话框显示时）
     if (key == LogicalKeyboardKey.goBack || key == LogicalKeyboardKey.escape) {
       if (_showExitDialog) {
         setState(() => _showExitDialog = false);
@@ -862,12 +859,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  /// 退出/设置透明弹窗（参考酷9）
-  final FocusNode _exitDialogSettingsFocus = FocusNode();
-  final FocusNode _exitDialogExitFocus = FocusNode();
-  final FocusNode _exitDialogCancelFocus = FocusNode();
-  int _exitDialogSelectedIndex = 0; // 0=设置, 1=退出, 2=取消
-
   void _handleExitDialogKey(RawKeyEvent event) {
     if (event is! RawKeyDownEvent) return;
     final key = event.logicalKey;
@@ -933,7 +924,6 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildExitDialog() {
     if (!_showExitDialog) return const SizedBox.shrink();
 
-    // 对话框显示时，自动将焦点设置到第一个按钮
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_showExitDialog && mounted) {
         _exitDialogSelectedIndex = 0;
@@ -951,7 +941,7 @@ class _HomeScreenState extends State<HomeScreen> {
           color: Colors.black.withOpacity(0.5),
           child: Center(
             child: GestureDetector(
-              onTap: () {}, // 阻止点击穿透
+              onTap: () {},
               child: Container(
                 width: 320,
                 padding: const EdgeInsets.all(24),
@@ -1135,16 +1125,17 @@ class _HomeScreenState extends State<HomeScreen> {
                             ),
                           );
                         },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
       ),
-    ),
-  ],
-),
-),
-),
-),
-),
-);
-}
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1185,7 +1176,6 @@ class _HomeScreenState extends State<HomeScreen> {
             setState(() => _showExitDialog = false);
             return false;
           }
-          // 没有任何窗口时，弹出退出/设置对话框（参考酷9）
           setState(() => _showExitDialog = true);
           return false;
         },
@@ -1434,7 +1424,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: _buildEpgInfoBar(),
               ),
 
-              // 频道号输入提示
               if (_channelNumberInput.isNotEmpty)
                 Positioned(
                   top: MediaQuery.of(context).size.height * 0.25,
@@ -1461,7 +1450,6 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
 
-              // 退出/设置透明弹窗
               _buildExitDialog(),
 
               if (_showRightMenu)
