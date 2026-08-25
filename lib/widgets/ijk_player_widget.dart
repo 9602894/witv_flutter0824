@@ -59,6 +59,11 @@ class _IjkPlayerWidgetState extends State<IjkPlayerWidget> {
       },
       creationParamsCodec: const StandardMessageCodec(),
       onPlatformViewCreated: (int id) {
+        // 修复：主动发送视频 URL 给原生播放器
+        _channel.invokeMethod('setUrl', {
+          'url': widget.url,
+          'decoderIndex': widget.decoderIndex,
+        });
         _channel.setMethodCallHandler((call) async {
           if (call.method == 'onError') {
             widget.onError?.call();
