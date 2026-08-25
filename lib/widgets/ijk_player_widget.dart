@@ -4,25 +4,26 @@ import 'package:flutter/services.dart';
 
 class IjkPlayerWidget extends StatefulWidget {
   final String url;
+  final int decoderIndex;
   final VoidCallback? onError;
   final ValueChanged<double>? onSpeedUpdate;
-  final int decoderIndex;
 
   const IjkPlayerWidget({
     Key? key,
     required this.url,
+    this.decoderIndex = 0,
     this.onError,
     this.onSpeedUpdate,
-    this.decoderIndex = 0,
   }) : super(key: key);
 
   @override
-  _IjkPlayerWidgetState createState() => _IjkPlayerWidgetState();
+  State<IjkPlayerWidget> createState() => _IjkPlayerWidgetState();
 }
 
 class _IjkPlayerWidgetState extends State<IjkPlayerWidget> {
-  static const MethodChannel _channel = MethodChannel('com.example.witv/ijkplayer');
+  MethodChannel? _channel;
   Timer? _speedTimer;
+  bool _isLoading = true;
 
   @override
   void initState() {
@@ -30,48 +31,92 @@ class _IjkPlayerWidgetState extends State<IjkPlayerWidget> {
     _startSpeedTimer();
   }
 
+  @override
+  void didUpdateWidget(covariant IjkPlayerWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 关键：URL 变化时不重建 PlatformView，直接发 setUrl 指令
+    if (widget.url != oldWidget.url || widget.decoderIndex != oldWidget.decoderIndex) {
+      _setUrl(widget.url, widget.decoderIndex);
+    }
+  }
+
   void _startSpeedTimer() {
     _speedTimer?.cancel();
     _speedTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
       try {
-        final speed = await _channel.invokeMethod<double>('getSpeed');
-        if (speed != null && widget.onSpeedUpdate != null) {
-          widget.onSpeedUpdate!(speed);
+        final speed = await _channel?.invokeMethod<double>('getSpeed');
+        if (speed != null && mounted) {
+          widget.onSpeedUpdate?.call(speed);
         }
-      } catch (_) {}
+      } catch (_) {
+        // 原生未实现 getSpeed 时静默失败
+        widget.onSpeedUpdate?.call(0.0);
+      }
+    });
+  }
+
+  void _onPlatformViewCreated(int id) {
+    // 修复：使用动态 channel 名称，与原生端匹配
+    _channel = MethodChannel('ijkplayer_view_$id');
+    _channel?.setMethodCallHandler((call) async {
+      switch (call.method) {
+        case 'onError':
+          if (mounted) setState(() => _isLoading = false);
+          widget.onError?.call();
+          break;
+        case 'onInfo':
+          final what = call.arguments['what'] as int?;
+          if (what == 3 && mounted) {
+            // 首帧渲染完成，隐藏加载圈
+            setState(() => _isLoading = false);
+          }
+          break;
+      }
+    });
+    _setUrl(widget.url, widget.decoderIndex);
+  }
+
+  void _setUrl(String url, int decoderIndex) {
+    if (mounted) setState(() => _isLoading = true);
+    _channel?.invokeMethod('setUrl', {
+      'url': url,
+      'decoderIndex': decoderIndex,
     });
   }
 
   @override
   void dispose() {
     _speedTimer?.cancel();
+    _channel?.invokeMethod('release');
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return AndroidView(
-      // 修复：viewType 必须与 MainActivity.kt 中注册的名字一致
-      viewType: 'ijkplayer_view',
-      creationParams: <String, dynamic>{
-        'url': widget.url,
-        'decoderIndex': widget.decoderIndex,
-      },
-      creationParamsCodec: const StandardMessageCodec(),
-      onPlatformViewCreated: (int id) {
-        // 修复：主动发送视频 URL 给原生播放器
-        _channel.invokeMethod('setUrl', {
-          'url': widget.url,
-          'decoderIndex': widget.decoderIndex,
-        });
-        _channel.setMethodCallHandler((call) async {
-          if (call.method == 'onError') {
-            widget.onError?.call();
-          }
-          return null;
-        });
-      },
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        AndroidView(
+          viewType: 'ijkplayer_view',
+          creationParams: {
+            'url': widget.url,
+            'decoderIndex': widget.decoderIndex,
+          },
+          creationParamsCodec: const StandardMessageCodec(),
+          onPlatformViewCreated: _onPlatformViewCreated,
+        ),
+        if (_isLoading)
+          Container(
+            color: Colors.black,
+            child: const Center(
+              child: SizedBox(
+                width: 36,
+                height: 36,
+                child: CircularProgressIndicator(strokeWidth: 2.5),
+              ),
+            ),
+          ),
+      ],
     );
   }
 }
-
