@@ -34,7 +34,6 @@ class _ChannelLogoState extends State<ChannelLogo> {
     super.initState();
     _load();
     _logoListener = () {
-      // 任意台标下载完成时刷新当前台标
       if (mounted) _load();
     };
     LogoService().logoUpdateNotifier.addListener(_logoListener!);
@@ -105,7 +104,7 @@ class ChannelList extends StatelessWidget {
     required this.selectedChannel,
     required this.onSelect,
     required this.epgMap,
-    this.showChannelNumber = false,
+    this.showChannelNumber = true,
     this.showLogo = true,
   }) : super(key: key);
 
@@ -120,12 +119,43 @@ class ChannelList extends StatelessWidget {
         return ListTile(
           dense: true,
           leading: showLogo
-              ? ChannelLogo(
-                  channelName: channel.name,
-                  width: 32,
-                  height: 32,
+              ? Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (showChannelNumber && channel.number != null)
+                      Container(
+                        width: 40,
+                        alignment: Alignment.center,
+                        child: Text(
+                          '${channel.number}',
+                          style: TextStyle(
+                            color: isSelected ? Colors.yellow : Colors.white70,
+                            fontSize: 13,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ChannelLogo(
+                      channelName: channel.name,
+                      width: 32,
+                      height: 32,
+                    ),
+                  ],
                 )
-              : null,
+              : (showChannelNumber && channel.number != null)
+                  ? Container(
+                      width: 40,
+                      alignment: Alignment.center,
+                      child: Text(
+                        '${channel.number}',
+                        style: TextStyle(
+                          color: isSelected ? Colors.yellow : Colors.white70,
+                          fontSize: 13,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    )
+                  : null,
           title: Text(
             showChannelNumber && channel.number != null
                 ? '${channel.number}. ${channel.name}'
