@@ -88,14 +88,16 @@ class _IjkPlayerWidgetState extends State<IjkPlayerWidget> {
     return Stack(
       fit: StackFit.expand,
       children: [
-        AndroidView(
-          viewType: 'ijkplayer_view',
-          creationParams: {
-            'url': widget.url,
-            'decoderIndex': widget.decoderIndex,
-          },
-          creationParamsCodec: const StandardMessageCodec(),
-          onPlatformViewCreated: _onPlatformViewCreated,
+        ExcludeFocus(
+          child: AndroidView(
+            viewType: 'ijkplayer_view',
+            creationParams: {
+              'url': widget.url,
+              'decoderIndex': widget.decoderIndex,
+            },
+            creationParamsCodec: const StandardMessageCodec(),
+            onPlatformViewCreated: _onPlatformViewCreated,
+          ),
         ),
         if (_isLoading)
           Container(
