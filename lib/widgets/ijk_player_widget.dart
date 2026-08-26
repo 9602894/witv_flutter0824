@@ -34,6 +34,7 @@ class _IjkPlayerWidgetState extends State<IjkPlayerWidget> {
   @override
   void didUpdateWidget(covariant IjkPlayerWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
+    // 关键：URL 变化时不复建 PlatformView，直接发 setUrl 指令
     if (widget.url != oldWidget.url || widget.decoderIndex != oldWidget.decoderIndex) {
       _setUrl(widget.url, widget.decoderIndex);
     }
@@ -56,7 +57,9 @@ class _IjkPlayerWidgetState extends State<IjkPlayerWidget> {
           break;
         case 'onInfo':
           final what = call.arguments['what'] as int?;
-          if (what == 3 && mounted) setState(() => _isLoading = false);
+          if (what == 3 && mounted) {
+            setState(() => _isLoading = false);
+          }
           break;
       }
     });
@@ -83,16 +86,14 @@ class _IjkPlayerWidgetState extends State<IjkPlayerWidget> {
     return Stack(
       fit: StackFit.expand,
       children: [
-        ExcludeFocus(
-          child: AndroidView(
-            viewType: 'ijkplayer_view',
-            creationParams: {
-              'url': widget.url,
-              'decoderIndex': widget.decoderIndex,
-            },
-            creationParamsCodec: const StandardMessageCodec(),
-            onPlatformViewCreated: _onPlatformViewCreated,
-          ),
+        AndroidView(
+          viewType: 'ijkplayer_view',
+          creationParams: {
+            'url': widget.url,
+            'decoderIndex': widget.decoderIndex,
+          },
+          creationParamsCodec: const StandardMessageCodec(),
+          onPlatformViewCreated: _onPlatformViewCreated,
         ),
         if (_isLoading)
           Container(
