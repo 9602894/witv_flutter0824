@@ -56,9 +56,7 @@ class _IjkPlayerWidgetState extends State<IjkPlayerWidget> {
           break;
         case 'onInfo':
           final what = call.arguments['what'] as int?;
-          if (what == 3 && mounted) {
-            setState(() => _isLoading = false);
-          }
+          if (what == 3 && mounted) setState(() => _isLoading = false);
           break;
       }
     });
@@ -85,7 +83,6 @@ class _IjkPlayerWidgetState extends State<IjkPlayerWidget> {
     return Stack(
       fit: StackFit.expand,
       children: [
-        // 去掉 ExcludeFocus，避免 PlatformView 渲染异常
         AndroidView(
           viewType: 'ijkplayer_view',
           creationParams: {
