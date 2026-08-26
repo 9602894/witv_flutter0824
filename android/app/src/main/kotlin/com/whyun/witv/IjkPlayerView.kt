@@ -27,12 +27,6 @@ class IjkPlayerView(
     init {
         decoderIndex = (creationParams?.get("decoderIndex") as? Int) ?: 0
 
-        val initialUrl = creationParams?.get("url") as? String
-        if (initialUrl != null) {
-            currentUrl = initialUrl
-            pendingUrl = initialUrl
-        }
-
         // 关键：禁用 SurfaceView 焦点，防止抢走遥控器按键
         surfaceView.isFocusable = false
         surfaceView.isFocusableInTouchMode = false
