@@ -27,10 +27,6 @@ class IjkPlayerView(
     init {
         decoderIndex = (creationParams?.get("decoderIndex") as? Int) ?: 0
 
-        // 关键：禁用 SurfaceView 焦点，防止抢走遥控器按键
-        surfaceView.isFocusable = false
-        surfaceView.isFocusableInTouchMode = false
-
         methodChannel.setMethodCallHandler { call, result ->
             when (call.method) {
                 "setUrl" -> {
@@ -77,14 +73,17 @@ class IjkPlayerView(
     private fun createPlayer(): IjkMediaPlayer {
         val player = IjkMediaPlayer()
 
+        // ========== 【换台速度】网络探测 ==========
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "probesize", 512 * 1024L)
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "analyzeduration", 200 * 1000L)
 
+        // 断线重连
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "reconnect", 1L)
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "reconnect_at_eof", 1L)
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "reconnect_streamed", 1L)
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "reconnect_delay_max", 5L)
 
+        // 网络
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "timeout", 10 * 1000 * 1000L)
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "dns_cache_clear", 1L)
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "fflags", "fastseek")
@@ -94,7 +93,10 @@ class IjkPlayerView(
             "file,http,https,tcp,tls,crypto,rtsp,rtp,udp,rtmp,rtmps,rtmpt,rtmpts"
         )
 
+        // ========== 【画质】解码/渲染参数 ==========
+        // 画面队列默认 1，不要改大，改大会增加延迟
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "video-pictq-size", 1L)
+
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "min-frames", 1L)
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "start-on-prepared", 1L)
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "packet-buffering", 1L)
@@ -103,19 +105,27 @@ class IjkPlayerView(
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "opensles", 0L)
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "soundtouch", 1L)
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "avsync-threshold", 100L)
+
+        // ========== 【画质关键】解锁高帧率 ==========
         player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "max-fps", 60L)
 
+        // ========== 【流畅关键】framedrop 不能为 0 ==========
+        // 0 = 解码跟不上时硬撑，画面堆积 → 卡顿
+        // 1 = 轻微丢帧，保流畅，画质损失极小（硬解时）
+
+        // ========== 解码器分支 ==========
         if (decoderIndex == 0) {
+            // 硬解：轻微丢帧保流畅，GPU 解码损失极小
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec", 1L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-all-videos", 1L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-avc", 1L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-hevc", 1L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-auto-rotate", 1L)
-            // 修复花屏：华为 6110M 对动态分辨率支持不好，关闭
-            player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-handle-resolution-change", 0L)
+            player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-handle-resolution-change", 1L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "framedrop", 1L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_CODEC, "skip_loop_filter", 48L)
         } else {
+            // 软解：更容易卡，需要更积极丢帧
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec", 0L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-all-videos", 0L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-hevc", 0L)
@@ -124,6 +134,7 @@ class IjkPlayerView(
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "framedrop", 5L)
         }
 
+        // 回调
         player.setOnPreparedListener {
             player.start()
             methodChannel.invokeMethod("onInfo", mapOf("what" to 3))
