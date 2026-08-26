@@ -169,4 +169,3 @@ class ChannelList extends StatelessWidget {
     );
   }
 }
-
