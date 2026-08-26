@@ -77,16 +77,17 @@ class _HomeScreenState extends State<HomeScreen> {
   final FocusNode _focusNode = FocusNode();
   int _selectedIndex = -1;
   String _digitBuffer = '';
+  String _digitDisplay = '';   // 新增：用于显示数字输入
   Timer? _digitTimer;
 
   VoidCallback? _epgListener;
   bool _autoLoaded = false;
   bool _showExitMenu = false;
   int _exitMenuSelectedIndex = 0;
-  String _focusArea = 'none'; // 'none', 'channelList', 'exitMenu', 'rightMenu'
+  String _focusArea = 'none';
   int _rightMenuSelectedIndex = 0;
   
-  // TV 全局按键防抖（防止 RawKeyboardListener 和全局监听重复触发）
+  // TV 全局按键防抖
   DateTime? _lastKeyTime;
   String? _lastKeyLabel;
 
@@ -102,7 +103,6 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _initAsync();
 
-    // TV/遥控器全局按键监听（双保险，不依赖 Flutter 焦点系统）
     RawKeyboard.instance.addListener(_handleGlobalKeyEvent);
     HardwareKeyboard.instance.addHandler(_handleHardwareKeyEvent);
 
@@ -110,7 +110,6 @@ class _HomeScreenState extends State<HomeScreen> {
       if (!mounted) return;
       _updateEpgInfo();
       if (isScheduleMode) setState(() {});
-      // EPG加载/更新完成后，触发台标下载
       _tryDownloadLogos();
     };
     EpgParser.epgUpdateCounter.addListener(_epgListener!);
@@ -121,16 +120,13 @@ class _HomeScreenState extends State<HomeScreen> {
     await _initLayoutConfigFile();
     await _loadLayoutConfig();
 
-    // 如果没有配置台标来源，弹出设置对话框（阻塞等待用户选择）
     final hasLogoSource = await _logoService.hasConfiguredSource();
     if (!hasLogoSource && mounted) {
       LogService.write('Logo: 首次使用，引导用户设置台标来源');
       await LogoSourceSettingDialog.show(context, isFirstTime: true);
     }
 
-    // 用户设置完来源后，触发台标下载（此时订阅源可能已在 didChangeDependencies 中加载）
     _tryDownloadLogos();
-
     _initEpgScheduler();
     _startEpgInfoTimer();
     _loadEpgInBackground();
@@ -138,7 +134,6 @@ class _HomeScreenState extends State<HomeScreen> {
     if (mounted) setState(() => isLoading = false);
   }
 
-  /// 尝试下载台标：有频道数据且配置了来源时才执行
   void _tryDownloadLogos() {
     if (channels.isEmpty) return;
     _logoService.hasConfiguredSource().then((hasSource) {
@@ -344,6 +339,7 @@ class _HomeScreenState extends State<HomeScreen> {
   void _switchChannel(Channel ch) {
     _cancelRetry();
     _digitBuffer = '';
+    _digitDisplay = '';
     _digitTimer?.cancel();
 
     setState(() {
@@ -362,6 +358,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (groupChannels == null || groupChannels.isEmpty) return;
     _cancelRetry();
     _digitBuffer = '';
+    _digitDisplay = '';
     _digitTimer?.cancel();
 
     setState(() {
@@ -375,7 +372,6 @@ class _HomeScreenState extends State<HomeScreen> {
     });
 
     _logoService.preloadAllLogos(channels);
-    // 切换分组后，下载新分组中尚未缓存的台标
     _tryDownloadLogos();
     if (currentChannel != null) {
       _updateEpgInfo();
@@ -511,26 +507,21 @@ class _HomeScreenState extends State<HomeScreen> {
       _updateEpgInfo();
     }
 
-    // 频道列表加载完成后，尝试下载台标（来源可能已配置）
     _tryDownloadLogos();
   }
 
-  /// TV/遥控器全局按键处理（不依赖焦点系统）
-  // ========== TV/遥控器按键处理（双保险：RawKeyboard + HardwareKeyboard）==========
+  // ========== TV/遥控器按键处理 ==========
 
   void _handleGlobalKeyEvent(RawKeyEvent event) {
-    // 【关键】不检查 event 类型，TV 遥控器可能发送 Up/Down 或其他类型
     _processKeyEvent(event.logicalKey, 'RawKeyboard');
   }
 
   bool _handleHardwareKeyEvent(KeyEvent event) {
-    // HardwareKeyboard 是 Flutter 3.19+ 推荐的新 API，更可靠
     _processKeyEvent(event.logicalKey, 'HardwareKeyboard');
-    return false; // 不拦截，继续传播
+    return false;
   }
 
   void _processKeyEvent(LogicalKeyboardKey key, String source) {
-    // 防抖：同一按键 120ms 内只处理一次
     final now = DateTime.now();
     final keyIdHex = '0x${key.keyId.toRadixString(16)}';
     final cacheKey = '$keyIdHex-${key.keyLabel}';
@@ -542,10 +533,9 @@ class _HomeScreenState extends State<HomeScreen> {
     _lastKeyTime = now;
     _lastKeyLabel = cacheKey;
 
-    // 记录日志，便于调试 TV 遥控器的实际 keyId
     LogService.write('TV按键 [$source]: keyId=$keyIdHex label="${key.keyLabel}"');
 
-    // ========== 数字键（全局） ==========
+    // 数字键
     final digitKeys = [
       LogicalKeyboardKey.digit0, LogicalKeyboardKey.digit1,
       LogicalKeyboardKey.digit2, LogicalKeyboardKey.digit3,
@@ -556,9 +546,11 @@ class _HomeScreenState extends State<HomeScreen> {
     if (digitKeys.contains(key)) {
       _digitTimer?.cancel();
       _digitBuffer += key.keyLabel;
+      _digitDisplay = _digitBuffer;   // 更新显示
       _digitTimer = Timer(const Duration(milliseconds: 1500), () {
         _jumpToChannelNumber(_digitBuffer);
         _digitBuffer = '';
+        _digitDisplay = '';
       });
       return;
     }
@@ -567,9 +559,9 @@ class _HomeScreenState extends State<HomeScreen> {
       _digitTimer?.cancel();
       _jumpToChannelNumber(_digitBuffer);
       _digitBuffer = '';
+      _digitDisplay = '';
     }
 
-    // ========== 按键识别（超宽松匹配，覆盖所有 TV 遥控器）==========
     final keyId = key.keyId;
     final label = key.keyLabel.toLowerCase();
 
@@ -636,9 +628,7 @@ class _HomeScreenState extends State<HomeScreen> {
                    label.contains('escape') ||
                    label.contains('return');
 
-    // ========== 退出菜单状态 ==========
-    // 关键：全局监听完全让位，让 ExitMenu 自己的 Focus 系统处理所有按键
-    // 只保留返回键作为备选（防止 ExitMenu 焦点丢失时的兜底）
+    // 退出菜单
     if (_showExitMenu) {
       if (isBack) {
         setState(() {
@@ -647,11 +637,10 @@ class _HomeScreenState extends State<HomeScreen> {
         });
         return;
       }
-      // 方向键、OK 键等全部忽略，让 ExitMenu 的 Focus.onKeyEvent 处理
       return;
     }
 
-    // ========== 右侧菜单状态 ==========
+    // 右侧菜单
     if (_showRightMenu) {
       const menuItemsCount = 5;
       if (isUp) {
@@ -669,7 +658,7 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    // ========== 频道列表状态 ==========
+    // 频道列表
     if (showChannelList && !isScheduleMode) {
       if (channels.isEmpty) return;
       if (isUp) {
@@ -701,7 +690,7 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    // ========== 节目单模式 ==========
+    // 节目单模式
     if (isScheduleMode) {
       if (isBack) {
         setState(() => isScheduleMode = false);
@@ -709,7 +698,7 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    // ========== 无窗口状态（参考酷9） ==========
+    // 无窗口状态
     if (isOk) {
       setState(() {
         isScheduleMode = false;
@@ -753,9 +742,9 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _handleKeyEvent(RawKeyEvent event) {
-    // RawKeyboardListener 的回调也走统一处理（带防抖不会重复触发）
     _processKeyEvent(event.logicalKey, 'RawKeyboardListener');
   }
+
   void _jumpToChannelNumber(String digits) {
     if (digits.isEmpty) return;
     final targetNumber = int.tryParse(digits);
@@ -778,27 +767,54 @@ class _HomeScreenState extends State<HomeScreen> {
       _focusArea = 'none';
     });
     switch (index) {
-      case 0: // 设置
+      case 0:
         Navigator.push(context, MaterialPageRoute(builder: (_) => SettingsScreen()))
             .then((_) => setState(() {}));
         break;
-      case 1: // 编辑
+      case 1:
         if (isEditMode) {
           _exitEditMode();
         } else {
           setState(() => isEditMode = true);
         }
         break;
-      case 2: // 列表订阅
+      case 2:
         _showAddSubscriptionDialog();
         break;
-      case 3: // EPG订阅
+      case 3:
         _showAddEpgDialog();
         break;
-      case 4: // 关闭
+      case 4:
         break;
     }
   }
+
+  // ========== 退出对话框 ==========
+  Future<void> _showExitDialog() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      barrierColor: Colors.black.withOpacity(0.6),
+      builder: (_) => AlertDialog(
+        title: const Text('提示'),
+        content: const Text('确定要退出应用吗？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('确定'),
+          ),
+        ],
+      ),
+    );
+    if (confirm == true) {
+      exit(0);
+    }
+  }
+
+  // ========== 构建方法 ==========
 
   Widget _buildTag(String text) {
     return Container(
@@ -1055,12 +1071,8 @@ class _HomeScreenState extends State<HomeScreen> {
             });
             return false;
           }
-          // 无窗口状态下按返回，弹出退出菜单
-          setState(() {
-            _showExitMenu = true;
-            _exitMenuSelectedIndex = 0;
-            _focusArea = 'exitMenu';
-          });
+          // 修改 A：显示退出对话框
+          _showExitDialog();
           return false;
         },
         child: Scaffold(
@@ -1086,6 +1098,28 @@ class _HomeScreenState extends State<HomeScreen> {
                     onTap: () {
                       _showEpgInfoTemporarily();
                     },
+                  ),
+                ),
+
+              // 修改 B：数字键输入显示
+              if (_digitDisplay.isNotEmpty)
+                Positioned(
+                  top: 60,
+                  right: 20,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withOpacity(0.7),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      _digitDisplay,
+                      style: const TextStyle(
+                        color: Colors.yellow,
+                        fontSize: 24,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
                   ),
                 ),
 
@@ -1374,7 +1408,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
 
-              // 退出菜单（修改 B：移除 selectedIndex，更新回调）
               if (_showExitMenu)
                 Positioned.fill(
                   child: ExitMenu(
@@ -1408,6 +1441,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  // 修改 C + D：增加 index 参数，实现高亮
   Widget _buildMenuItem(IconData icon, String label, VoidCallback onTap, int index) {
     final isSelected = _showRightMenu && _rightMenuSelectedIndex == index;
     return ListTile(
