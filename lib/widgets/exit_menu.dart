@@ -71,7 +71,7 @@ class _ExitMenuState extends State<ExitMenu> {
           color: Colors.black.withOpacity(0.7),
           child: Center(
             child: GestureDetector(
-              onTap: () {},
+              onTap: () {}, // 阻止点击穿透
               child: Container(
                 width: 280,
                 padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 12),
