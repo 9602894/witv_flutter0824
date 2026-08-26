@@ -82,8 +82,12 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _autoLoaded = false;
   bool _showExitMenu = false;
   int _exitMenuSelectedIndex = 0;
+  int _rightMenuSelectedIndex = 0;
   String _digitDisplay = '';
   Timer? _digitHideTimer;
+
+  // ---------- 新增焦点列控制 ----------
+  bool _focusOnGroup = false; // true=焦点在分组列，false=焦点在频道列
 
   DateTime get _beijingNow => EpgParser.beijingNow;
   String _formatTime(DateTime time) => EpgParser.formatBeijingTime(time);
@@ -101,7 +105,6 @@ class _HomeScreenState extends State<HomeScreen> {
       if (!mounted) return;
       _updateEpgInfo();
       if (isScheduleMode) setState(() {});
-      // EPG加载/更新完成后，触发台标下载
       _tryDownloadLogos();
     };
     EpgParser.epgUpdateCounter.addListener(_epgListener!);
@@ -112,16 +115,13 @@ class _HomeScreenState extends State<HomeScreen> {
     await _initLayoutConfigFile();
     await _loadLayoutConfig();
 
-    // 如果没有配置台标来源，弹出设置对话框（阻塞等待用户选择）
     final hasLogoSource = await _logoService.hasConfiguredSource();
     if (!hasLogoSource && mounted) {
       LogService.write('Logo: 首次使用，引导用户设置台标来源');
       await LogoSourceSettingDialog.show(context, isFirstTime: true);
     }
 
-    // 用户设置完来源后，触发台标下载（此时订阅源可能已在 didChangeDependencies 中加载）
     _tryDownloadLogos();
-
     _initEpgScheduler();
     _startEpgInfoTimer();
     _loadEpgInBackground();
@@ -129,7 +129,6 @@ class _HomeScreenState extends State<HomeScreen> {
     if (mounted) setState(() => isLoading = false);
   }
 
-  /// 尝试下载台标：有频道数据且配置了来源时才执行
   void _tryDownloadLogos() {
     if (channels.isEmpty) return;
     _logoService.hasConfiguredSource().then((hasSource) {
@@ -341,6 +340,8 @@ class _HomeScreenState extends State<HomeScreen> {
       currentChannel = ch;
       _selectedIndex = channels.indexOf(ch);
       _updateEpgInfo();
+      // 切换频道后，焦点自动回到频道列
+      _focusOnGroup = false;
     });
 
     _showEpgInfoTemporarily();
@@ -359,15 +360,20 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       currentGroup = groupName;
       channels = groupChannels;
-      if (currentChannel != null && channels.contains(currentChannel)) {
-        _selectedIndex = channels.indexOf(currentChannel!);
+      // 切换分组后，选中第一个频道，并将焦点移到频道列
+      if (channels.isNotEmpty) {
+        _selectedIndex = 0;
+        currentChannel = channels.first;
+        _updateEpgInfo();
+        _showEpgInfoTemporarily();
+        _focusOnGroup = false; // 焦点回到频道列
       } else {
         _selectedIndex = -1;
+        currentChannel = null;
       }
     });
 
     _logoService.preloadAllLogos(channels);
-    // 切换分组后，下载新分组中尚未缓存的台标
     _tryDownloadLogos();
     if (currentChannel != null) {
       _updateEpgInfo();
@@ -375,138 +381,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Future<void> _loadSubscriptionData(Subscription sub) async {
-    try {
-      final url = sub.url;
-      final cacheFile = await PlaylistParser.getCacheFile(url, sub.name);
-
-      if (await cacheFile.exists()) {
-        try {
-          final content = await cacheFile.readAsString();
-          final groupMap = PlaylistParser.parseFromString(content);
-          if (groupMap.isNotEmpty) {
-            _applyGroupMap(groupMap, sub.name);
-          }
-        } catch (e) {
-          LogService.write('缓存解析失败: $e');
-        }
-      }
-
-      if (!await cacheFile.exists() || channels.isEmpty) {
-        final groupMap = await PlaylistParser.parseFromUrl(url);
-        if (groupMap.isNotEmpty) {
-          await PlaylistParser.saveCache(groupMap, url, sub.name);
-          _applyGroupMap(groupMap, sub.name);
-        } else {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('订阅源加载失败')),
-            );
-          }
-        }
-        return;
-      }
-
-      if (!_isUpdatingSubscription) {
-        _isUpdatingSubscription = true;
-        Future.delayed(const Duration(seconds: 2), () async {
-          try {
-            final newMap = await PlaylistParser.parseFromUrl(url);
-            if (newMap.isNotEmpty) {
-              final oldCount = _fullGroupMap?.values.expand((l) => l).length ?? 0;
-              final newCount = newMap.values.expand((l) => l).length;
-              if (oldCount != newCount || newMap.keys.length != groups.length) {
-                await PlaylistParser.saveCache(newMap, url, sub.name);
-                if (mounted && currentSubName == sub.name) {
-                  _applyGroupMap(newMap, sub.name);
-                }
-              }
-            }
-          } catch (e) {
-            LogService.write('后台更新失败: $e');
-          } finally {
-            _isUpdatingSubscription = false;
-          }
-        });
-      }
-    } catch (e, stack) {
-      LogService.writeCrashLog('加载订阅源异常: $e', stack);
-    }
-  }
-
-  void _applyGroupMap(Map<String, List<Channel>> groupMap, String subName) {
-    if (groupMap.isEmpty) return;
-
-    final m3uLogos = <String, String>{};
-    for (final list in groupMap.values) {
-      for (final ch in list) {
-        if (ch.logoUrl != null && ch.logoUrl!.isNotEmpty) {
-          m3uLogos[ch.name] = ch.logoUrl!;
-        }
-      }
-    }
-    _logoService.updateM3uLogos(m3uLogos);
-    _fullGroupMap = groupMap;
-
-    setState(() {
-      groups = groupMap.keys.toList();
-      if (groups.isNotEmpty) {
-        if (currentGroup == null || !groups.contains(currentGroup)) {
-          currentGroup = groups.first;
-        }
-        final groupChannels = groupMap[currentGroup];
-        if (groupChannels != null && groupChannels.isNotEmpty) {
-          channels = groupChannels;
-          if (currentChannel == null && channels.isNotEmpty) {
-            final lastChannel = Provider.of<SettingsService>(context, listen: false).getLastChannel();
-            if (lastChannel != null) {
-              Channel? found;
-              for (final list in groupMap.values) {
-                try {
-                  found = list.firstWhere((ch) => ch.name == lastChannel);
-                  break;
-                } catch (_) {}
-              }
-              if (found != null) {
-                currentChannel = found;
-                _selectedIndex = channels.indexOf(found);
-              } else {
-                currentChannel = channels.first;
-                _selectedIndex = 0;
-              }
-            } else {
-              currentChannel = channels.first;
-              _selectedIndex = 0;
-            }
-            _showEpgInfoTemporarily();
-            _updateEpgInfo();
-          } else if (currentChannel != null && channels.contains(currentChannel)) {
-            _selectedIndex = channels.indexOf(currentChannel!);
-          } else {
-            _selectedIndex = -1;
-          }
-        } else {
-          for (final g in groups) {
-            final chs = groupMap[g];
-            if (chs != null && chs.isNotEmpty) {
-              currentGroup = g;
-              channels = chs;
-              break;
-            }
-          }
-        }
-      }
-      currentSubName = subName;
-    });
-
-    if (currentChannel != null) {
-      _updateEpgInfo();
-    }
-
-    // 频道列表加载完成后，尝试下载台标（来源可能已配置）
-    _tryDownloadLogos();
-  }
-
+  // ---------- 修改后的按键处理 ----------
   void _handleKeyEvent(RawKeyEvent event) {
     if (event is! RawKeyDownEvent) return;
     final key = event.logicalKey;
@@ -530,7 +405,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final isMenu = key == LogicalKeyboardKey.contextMenu || keyId == 0x100000805 ||
                    label.contains('menu');
 
-    // ========== 退出菜单状态 ==========
+    // ---------- 退出菜单 ----------
     if (_showExitMenu) {
       if (isUp) {
         setState(() => _exitMenuSelectedIndex = (_exitMenuSelectedIndex - 1 + 2) % 2);
@@ -550,7 +425,7 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    // ========== 数字键 ==========
+    // ---------- 数字键 ----------
     final digitKeys = [
       LogicalKeyboardKey.digit0, LogicalKeyboardKey.digit1,
       LogicalKeyboardKey.digit2, LogicalKeyboardKey.digit3,
@@ -580,7 +455,7 @@ class _HomeScreenState extends State<HomeScreen> {
       if (mounted) setState(() { _digitBuffer = ''; _digitDisplay = ''; });
     }
 
-    // ========== 右侧菜单 ==========
+    // ---------- 右侧菜单 ----------
     if (_showRightMenu) {
       const menuItemsCount = 5;
       if (isUp) {
@@ -595,26 +470,96 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    // ========== 频道列表 ==========
+    // ---------- 频道列表模式（含焦点切换） ----------
     if (showChannelList && !isScheduleMode) {
       if (channels.isEmpty) return;
-      if (isUp) {
-        setState(() => _selectedIndex = _selectedIndex > 0 ? _selectedIndex - 1 : channels.length - 1);
-      } else if (isDown) {
-        setState(() => _selectedIndex = _selectedIndex < channels.length - 1 ? _selectedIndex + 1 : 0);
-      } else if (isLeft) {
-        if (groups.isNotEmpty) {
-          final currentIdx = groups.indexOf(currentGroup!);
-          _switchToGroup(groups[(currentIdx - 1 + groups.length) % groups.length]);
+
+      // 左右键切换焦点列
+      if (isLeft) {
+        if (!_focusOnGroup) {
+          setState(() => _focusOnGroup = true);
         }
+        return;
       } else if (isRight) {
-        if (groups.isNotEmpty) {
-          final currentIdx = groups.indexOf(currentGroup!);
-          _switchToGroup(groups[(currentIdx + 1) % groups.length]);
+        if (_focusOnGroup) {
+          setState(() => _focusOnGroup = false);
+        }
+        return;
+      }
+
+      // 上下键根据焦点列执行不同操作
+      if (isUp) {
+        if (_focusOnGroup) {
+          // 焦点在分组列：切换到上一个分组
+          if (groups.isNotEmpty) {
+            final currentIdx = groups.indexOf(currentGroup!);
+            final prevIdx = (currentIdx - 1 + groups.length) % groups.length;
+            _switchToGroup(groups[prevIdx]);
+          }
+        } else {
+          // 焦点在频道列：切换到上一个频道，边界跳转分组
+          if (_selectedIndex > 0) {
+            setState(() => _selectedIndex--);
+          } else {
+            if (groups.isNotEmpty) {
+              final currentIdx = groups.indexOf(currentGroup!);
+              final prevIdx = (currentIdx - 1 + groups.length) % groups.length;
+              _switchToGroup(groups[prevIdx]);
+              // _switchToGroup 内部已将焦点置为频道列，并选中第一个，但我们需要选中最后一个
+              if (channels.isNotEmpty) {
+                setState(() {
+                  _selectedIndex = channels.length - 1;
+                  currentChannel = channels.last;
+                  _updateEpgInfo();
+                  _showEpgInfoTemporarily();
+                });
+              }
+            }
+          }
+        }
+      } else if (isDown) {
+        if (_focusOnGroup) {
+          // 焦点在分组列：切换到下一个分组
+          if (groups.isNotEmpty) {
+            final currentIdx = groups.indexOf(currentGroup!);
+            final nextIdx = (currentIdx + 1) % groups.length;
+            _switchToGroup(groups[nextIdx]);
+          }
+        } else {
+          // 焦点在频道列：切换到下一个频道，边界跳转分组
+          if (_selectedIndex < channels.length - 1) {
+            setState(() => _selectedIndex++);
+          } else {
+            if (groups.isNotEmpty) {
+              final currentIdx = groups.indexOf(currentGroup!);
+              final nextIdx = (currentIdx + 1) % groups.length;
+              _switchToGroup(groups[nextIdx]);
+              // _switchToGroup 内部已将焦点置为频道列，并选中第一个
+              if (channels.isNotEmpty) {
+                setState(() {
+                  _selectedIndex = 0;
+                  currentChannel = channels.first;
+                  _updateEpgInfo();
+                  _showEpgInfoTemporarily();
+                });
+              }
+            }
+          }
         }
       } else if (isOk) {
-        if (_selectedIndex >= 0 && _selectedIndex < channels.length) {
-          _switchChannel(channels[_selectedIndex]);
+        // OK键：如果焦点在分组列，则切换到该分组并自动将焦点移到频道列
+        if (_focusOnGroup) {
+          // 已在分组列，直接切换分组（但当前选中分组已由currentGroup表示）
+          // 这里可以不做额外操作，因为切换分组已经由上下键完成；OK键可视为确认选择当前分组，即切换到频道列
+          setState(() => _focusOnGroup = false);
+          if (channels.isNotEmpty && currentChannel == null) {
+            _switchChannel(channels.first);
+          }
+        } else {
+          // 焦点在频道列，则播放选中频道
+          if (_selectedIndex >= 0 && _selectedIndex < channels.length) {
+            _switchChannel(channels[_selectedIndex]);
+          }
         }
       } else if (isBack || isMenu) {
         setState(() => showChannelList = false);
@@ -622,13 +567,16 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    // ========== 节目单 ==========
+    // ---------- 节目单模式 ----------
     if (isScheduleMode) {
-      if (isBack) setState(() => isScheduleMode = false);
+      if (isBack) {
+        setState(() => isScheduleMode = false);
+      }
+      // 如需在节目单中增加左右键滚动时间，可在此扩展
       return;
     }
 
-    // ========== 无窗口 ==========
+    // ---------- 无窗口全屏播放 ----------
     if (isOk || isMenu) {
       setState(() {
         isScheduleMode = false;
@@ -636,34 +584,60 @@ class _HomeScreenState extends State<HomeScreen> {
         _showRightMenu = false;
         _showEpgInfo = false;
         _epgInfoHideTimer?.cancel();
+        // 显示频道列表时默认焦点在频道列
+        _focusOnGroup = false;
       });
     } else if (isBack) {
       setState(() { _showExitMenu = true; _exitMenuSelectedIndex = 0; });
     } else if (isUp) {
+      // 切换上一个频道，边界跳转分组
       if (channels.isNotEmpty) {
-        final newIndex = _selectedIndex > 0 ? _selectedIndex - 1 : channels.length - 1;
-        setState(() => _selectedIndex = newIndex);
-        _switchChannel(channels[newIndex]);
+        if (_selectedIndex > 0) {
+          setState(() => _selectedIndex--);
+          _switchChannel(channels[_selectedIndex]);
+        } else {
+          if (groups.isNotEmpty) {
+            final currentIdx = groups.indexOf(currentGroup!);
+            final prevIdx = (currentIdx - 1 + groups.length) % groups.length;
+            _switchToGroup(groups[prevIdx]);
+            if (channels.isNotEmpty) {
+              setState(() {
+                _selectedIndex = channels.length - 1;
+                currentChannel = channels.last;
+                _updateEpgInfo();
+                _showEpgInfoTemporarily();
+              });
+            }
+          }
+        }
       }
     } else if (isDown) {
+      // 切换下一个频道，边界跳转分组
       if (channels.isNotEmpty) {
-        final newIndex = _selectedIndex < channels.length - 1 ? _selectedIndex + 1 : 0;
-        setState(() => _selectedIndex = newIndex);
-        _switchChannel(channels[newIndex]);
-      }
-    } else if (isLeft) {
-      if (groups.isNotEmpty) {
-        final currentIdx = groups.indexOf(currentGroup!);
-        _switchToGroup(groups[(currentIdx - 1 + groups.length) % groups.length]);
-      }
-    } else if (isRight) {
-      if (groups.isNotEmpty) {
-        final currentIdx = groups.indexOf(currentGroup!);
-        _switchToGroup(groups[(currentIdx + 1) % groups.length]);
+        if (_selectedIndex < channels.length - 1) {
+          setState(() => _selectedIndex++);
+          _switchChannel(channels[_selectedIndex]);
+        } else {
+          if (groups.isNotEmpty) {
+            final currentIdx = groups.indexOf(currentGroup!);
+            final nextIdx = (currentIdx + 1) % groups.length;
+            _switchToGroup(groups[nextIdx]);
+            if (channels.isNotEmpty) {
+              setState(() {
+                _selectedIndex = 0;
+                currentChannel = channels.first;
+                _updateEpgInfo();
+                _showEpgInfoTemporarily();
+              });
+            }
+          }
+        }
       }
     }
+    // 左右键在全屏播放时可预留为快进/快退，本修改不实现
   }
 
+  // 其他辅助方法（原样）
   void _executeRightMenuAction(int index) {
     setState(() => _showRightMenu = false);
     switch (index) {
@@ -678,6 +652,7 @@ class _HomeScreenState extends State<HomeScreen> {
       case 4: break;
     }
   }
+
   void _jumpToChannelNumber(String digits) {
     if (digits.isEmpty) return;
     final targetNumber = int.tryParse(digits);
@@ -1007,7 +982,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             }
                           });
                         }, isEditMode: isEditMode),
-                        Expanded(flex: (groupWeight * 100).toInt(), child: _buildGroupList()),
+                        Expanded(flex: (groupWeight * 100).toInt(), child: _buildGroupListWithFocus()),
                         _buildDragBar(onDrag: (delta) {
                           setState(() {
                             double newGroup = groupWeight + delta;
@@ -1030,11 +1005,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           child: Stack(
                             children: [
                               Positioned.fill(
-                                child: ListView.builder(
-                                  itemCount: channels.length,
-                                  itemBuilder: (context, index) =>
-                                      _buildChannelItem(channels[index], index),
-                                ),
+                                child: _buildChannelListWithFocus(),
                               ),
                               Positioned(
                                 right: 20 - channelListButtonOffset.dx,
@@ -1297,6 +1268,40 @@ class _HomeScreenState extends State<HomeScreen> {
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  // ---------- 新增带焦点指示的分组列表和频道列表 ----------
+  Widget _buildGroupListWithFocus() {
+    return Container(
+      decoration: BoxDecoration(
+        border: _focusOnGroup
+            ? Border.all(color: Colors.yellow, width: 2)
+            : null,
+      ),
+      child: GroupList(
+        groups: groups,
+        selectedGroup: currentGroup,
+        onSelect: (group) {
+          _switchToGroup(group);
+          // 切换分组后焦点自动移至频道列
+          setState(() => _focusOnGroup = false);
+        },
+      ),
+    );
+  }
+
+  Widget _buildChannelListWithFocus() {
+    return Container(
+      decoration: BoxDecoration(
+        border: !_focusOnGroup
+            ? Border.all(color: Colors.yellow, width: 2)
+            : null,
+      ),
+      child: ListView.builder(
+        itemCount: channels.length,
+        itemBuilder: (context, index) => _buildChannelItem(channels[index], index),
       ),
     );
   }
