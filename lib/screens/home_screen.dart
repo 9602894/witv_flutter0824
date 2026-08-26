@@ -79,10 +79,10 @@ class _HomeScreenState extends State<HomeScreen> {
   String _digitBuffer = '';
   Timer? _digitTimer;
 
+  // 新增：退出对话框和数字键
+  int _exitDialogSelectedIndex = 0;
   String _channelNumberInput = '';
   Timer? _channelNumberTimer;
-
-  int _exitDialogSelectedIndex = 0;
 
   VoidCallback? _epgListener;
   bool _autoLoaded = false;
@@ -507,10 +507,12 @@ class _HomeScreenState extends State<HomeScreen> {
     _tryDownloadLogos();
   }
 
+  // 修改：扩展遥控器支持到非列表模式
   void _handleKeyEvent(RawKeyEvent event) {
     if (event is! RawKeyDownEvent) return;
     final key = event.logicalKey;
 
+    // 退出对话框优先处理
     if (_showExitDialog) {
       _handleExitDialogKey(event);
       return;
@@ -522,13 +524,7 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    if (key == LogicalKeyboardKey.goBack || key == LogicalKeyboardKey.escape) {
-      if (_showExitDialog) {
-        setState(() => _showExitDialog = false);
-        return;
-      }
-    }
-
+    // 数字键全局处理
     final digitKeys = [
       LogicalKeyboardKey.digit0, LogicalKeyboardKey.digit1,
       LogicalKeyboardKey.digit2, LogicalKeyboardKey.digit3,
@@ -559,9 +555,11 @@ class _HomeScreenState extends State<HomeScreen> {
       }
       return;
     }
-    if (isEditMode) return;
 
-    if (showChannelList && !isScheduleMode) {
+    if (isEditMode || isScheduleMode) return;
+
+    if (showChannelList) {
+      // 列表模式（母版原逻辑）
       if (key == LogicalKeyboardKey.arrowUp) {
         setState(() => _selectedIndex = _selectedIndex > 0 ? _selectedIndex - 1 : channels.length - 1);
       } else if (key == LogicalKeyboardKey.arrowDown) {
@@ -584,6 +582,7 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       }
     } else {
+      // 非列表模式：上下换台，左右换组，OK显示列表
       if (key == LogicalKeyboardKey.arrowUp) {
         final currentIdx = currentChannel != null ? channels.indexOf(currentChannel!) : -1;
         final newIdx = currentIdx > 0 ? currentIdx - 1 : channels.length - 1;
@@ -619,6 +618,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  // 扩展：支持跨分组搜索
   void _jumpToChannelNumber(String digits) {
     if (digits.isEmpty) return;
     final targetNumber = int.tryParse(digits);
@@ -657,6 +657,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  // 新增：退出对话框按键处理
   void _handleExitDialogKey(RawKeyEvent event) {
     if (event is! RawKeyDownEvent) return;
     final key = event.logicalKey;
@@ -885,6 +886,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  // 新增：退出对话框
   Widget _buildExitDialog() {
     if (!_showExitDialog) return const SizedBox.shrink();
 
@@ -1099,6 +1101,7 @@ class _HomeScreenState extends State<HomeScreen> {
         child: Scaffold(
           body: Stack(
             children: [
+              // 新增：空状态提示
               if (channels.isEmpty && !isLoading)
                 Positioned.fill(
                   child: Container(
@@ -1374,6 +1377,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: _buildEpgInfoBar(),
               ),
 
+              // 新增：数字键输入显示
               if (_channelNumberInput.isNotEmpty)
                 Positioned(
                   top: MediaQuery.of(context).size.height * 0.25,
@@ -1400,6 +1404,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
 
+              // 新增：退出对话框
               _buildExitDialog(),
 
               if (_showRightMenu)
