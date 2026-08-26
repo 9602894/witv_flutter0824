@@ -102,8 +102,9 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _initAsync();
 
-    // TV/遥控器全局按键监听（不依赖 Flutter 焦点系统）
+    // TV/遥控器全局按键监听（双保险，不依赖 Flutter 焦点系统）
     RawKeyboard.instance.addListener(_handleGlobalKeyEvent);
+    HardwareKeyboard.instance.addHandler(_handleHardwareKeyEvent);
 
     _epgListener = () {
       if (!mounted) return;
@@ -249,6 +250,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _retryTimer?.cancel();
     _digitTimer?.cancel();
     RawKeyboard.instance.removeListener(_handleGlobalKeyEvent);
+    HardwareKeyboard.instance.removeHandler(_handleHardwareKeyEvent);
     _focusNode.dispose();
     _saveLayoutConfig();
     super.dispose();
@@ -514,27 +516,34 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   /// TV/遥控器全局按键处理（不依赖焦点系统）
-  void _handleGlobalKeyEvent(RawKeyEvent event) {
-    if (event is! RawKeyDownEvent) return;
+  // ========== TV/遥控器按键处理（双保险：RawKeyboard + HardwareKeyboard）==========
 
-    // 防抖：同一按键 80ms 内只处理一次（防止 RawKeyboardListener 和全局监听重复）
+  void _handleGlobalKeyEvent(RawKeyEvent event) {
+    // 【关键】不检查 event 类型，TV 遥控器可能发送 Up/Down 或其他类型
+    _processKeyEvent(event.logicalKey, 'RawKeyboard');
+  }
+
+  bool _handleHardwareKeyEvent(KeyEvent event) {
+    // HardwareKeyboard 是 Flutter 3.19+ 推荐的新 API，更可靠
+    _processKeyEvent(event.logicalKey, 'HardwareKeyboard');
+    return false; // 不拦截，继续传播
+  }
+
+  void _processKeyEvent(LogicalKeyboardKey key, String source) {
+    // 防抖：同一按键 120ms 内只处理一次
     final now = DateTime.now();
-    final keyLabel = event.logicalKey.keyLabel;
+    final keyIdHex = '0x${key.keyId.toRadixString(16)}';
+    final cacheKey = '$keyIdHex-${key.keyLabel}';
     if (_lastKeyTime != null &&
-        now.difference(_lastKeyTime!).inMilliseconds < 80 &&
-        _lastKeyLabel == keyLabel) {
+        now.difference(_lastKeyTime!).inMilliseconds < 120 &&
+        _lastKeyLabel == cacheKey) {
       return;
     }
     _lastKeyTime = now;
-    _lastKeyLabel = keyLabel;
+    _lastKeyLabel = cacheKey;
 
-    _handleKeyEvent(event);
-  }
-
-  void _handleKeyEvent(RawKeyEvent event) {
-    if (event is! RawKeyDownEvent) return;
-
-    final key = event.logicalKey;
+    // 记录日志，便于调试 TV 遥控器的实际 keyId
+    LogService.write('TV按键 [$source]: keyId=$keyIdHex label="${key.keyLabel}"');
 
     // ========== 数字键（全局） ==========
     final digitKeys = [
@@ -560,34 +569,75 @@ class _HomeScreenState extends State<HomeScreen> {
       _digitBuffer = '';
     }
 
+    // ========== 按键识别（超宽松匹配，覆盖所有 TV 遥控器）==========
+    final keyId = key.keyId;
+    final label = key.keyLabel.toLowerCase();
+
+    final isUp = key == LogicalKeyboardKey.arrowUp ||
+                 key == LogicalKeyboardKey.numpad8 ||
+                 key == LogicalKeyboardKey.keyW ||
+                 keyId == 0x100000304 ||
+                 keyId == 0x01000026 ||
+                 keyId == 0x01000097 ||
+                 label.contains('up') ||
+                 label.contains('dpad_up');
+
+    final isDown = key == LogicalKeyboardKey.arrowDown ||
+                   key == LogicalKeyboardKey.numpad2 ||
+                   key == LogicalKeyboardKey.keyS ||
+                   keyId == 0x100000301 ||
+                   keyId == 0x01000028 ||
+                   keyId == 0x01000098 ||
+                   label.contains('down') ||
+                   label.contains('dpad_down');
+
+    final isLeft = key == LogicalKeyboardKey.arrowLeft ||
+                   key == LogicalKeyboardKey.numpad4 ||
+                   key == LogicalKeyboardKey.keyA ||
+                   keyId == 0x100000302 ||
+                   keyId == 0x01000025 ||
+                   keyId == 0x01000096 ||
+                   label.contains('left') ||
+                   label.contains('dpad_left');
+
+    final isRight = key == LogicalKeyboardKey.arrowRight ||
+                    key == LogicalKeyboardKey.numpad6 ||
+                    key == LogicalKeyboardKey.keyD ||
+                    keyId == 0x100000303 ||
+                    keyId == 0x01000027 ||
+                    keyId == 0x01000099 ||
+                    label.contains('right') ||
+                    label.contains('dpad_right');
+
+    final isOk = key == LogicalKeyboardKey.enter ||
+                 key == LogicalKeyboardKey.select ||
+                 key == LogicalKeyboardKey.accept ||
+                 key == LogicalKeyboardKey.numpadEnter ||
+                 keyId == 0x100000161 ||
+                 keyId == 0x10000000d ||
+                 keyId == 0x0100000d ||
+                 keyId == 0x0100001c ||
+                 keyId == 0x0100001d ||
+                 keyId == 0x0100001e ||
+                 label.contains('enter') ||
+                 label.contains('select') ||
+                 label.contains('dpad_center');
+
+    final isBack = key == LogicalKeyboardKey.escape ||
+                   key == LogicalKeyboardKey.goBack ||
+                   key == LogicalKeyboardKey.backspace ||
+                   keyId == 0x100000803 ||
+                   keyId == 0x100000008 ||
+                   keyId == 0x0100000e ||
+                   keyId == 0x0100001b ||
+                   keyId == 0x0100006f ||
+                   keyId == 0x0100006e ||
+                   label.contains('back') ||
+                   label.contains('escape') ||
+                   label.contains('return');
+
     // ========== 退出菜单状态 ==========
     if (_showExitMenu) {
-      // 强制保持焦点，确保 RawKeyboardListener 持续接收事件
-      _focusNode.requestFocus();
-
-      // TV 遥控器 DPad 方向键可能映射为不同 keyId，这里做宽松匹配
-      final isUp = key == LogicalKeyboardKey.arrowUp ||
-                   key == LogicalKeyboardKey.numpad8 ||
-                   key == LogicalKeyboardKey.keyW ||
-                   key.keyId == 0x100000304 ||
-                   key.keyLabel == 'Arrow Up';
-      final isDown = key == LogicalKeyboardKey.arrowDown ||
-                     key == LogicalKeyboardKey.numpad2 ||
-                     key == LogicalKeyboardKey.keyS ||
-                     key.keyId == 0x100000301 ||
-                     key.keyLabel == 'Arrow Down';
-      final isOk = key == LogicalKeyboardKey.enter ||
-                   key == LogicalKeyboardKey.select ||
-                   key == LogicalKeyboardKey.accept ||
-                   key == LogicalKeyboardKey.numpadEnter ||
-                   key.keyId == 0x100000161 ||
-                   key.keyId == 0x10000000d;
-      final isBack = key == LogicalKeyboardKey.escape ||
-                     key == LogicalKeyboardKey.goBack ||
-                     key == LogicalKeyboardKey.backspace ||
-                     key.keyId == 0x100000803 ||
-                     key.keyId == 0x100000008;
-
       if (isUp) {
         setState(() => _exitMenuSelectedIndex = (_exitMenuSelectedIndex - 1 + 2) % 2);
       } else if (isDown) {
@@ -611,13 +661,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     // ========== 右侧菜单状态 ==========
     if (_showRightMenu) {
-      _focusNode.requestFocus();
       const menuItemsCount = 5;
-      final isUp = key == LogicalKeyboardKey.arrowUp || key == LogicalKeyboardKey.numpad8 || key == LogicalKeyboardKey.keyW || key.keyId == 0x100000304 || key.keyLabel == 'Arrow Up';
-      final isDown = key == LogicalKeyboardKey.arrowDown || key == LogicalKeyboardKey.numpad2 || key == LogicalKeyboardKey.keyS || key.keyId == 0x100000301 || key.keyLabel == 'Arrow Down';
-      final isOk = key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.select || key == LogicalKeyboardKey.accept || key == LogicalKeyboardKey.numpadEnter || key.keyId == 0x100000161 || key.keyId == 0x10000000d;
-      final isBack = key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack || key == LogicalKeyboardKey.backspace || key.keyId == 0x100000803 || key.keyId == 0x100000008;
-
       if (isUp) {
         setState(() => _rightMenuSelectedIndex = (_rightMenuSelectedIndex - 1 + menuItemsCount) % menuItemsCount);
       } else if (isDown) {
@@ -636,13 +680,6 @@ class _HomeScreenState extends State<HomeScreen> {
     // ========== 频道列表状态 ==========
     if (showChannelList && !isScheduleMode) {
       if (channels.isEmpty) return;
-      final isUp = key == LogicalKeyboardKey.arrowUp || key == LogicalKeyboardKey.numpad8 || key == LogicalKeyboardKey.keyW || key.keyId == 0x100000304 || key.keyLabel == 'Arrow Up';
-      final isDown = key == LogicalKeyboardKey.arrowDown || key == LogicalKeyboardKey.numpad2 || key == LogicalKeyboardKey.keyS || key.keyId == 0x100000301 || key.keyLabel == 'Arrow Down';
-      final isLeft = key == LogicalKeyboardKey.arrowLeft || key == LogicalKeyboardKey.numpad4 || key == LogicalKeyboardKey.keyA || key.keyId == 0x100000302 || key.keyLabel == 'Arrow Left';
-      final isRight = key == LogicalKeyboardKey.arrowRight || key == LogicalKeyboardKey.numpad6 || key == LogicalKeyboardKey.keyD || key.keyId == 0x100000303 || key.keyLabel == 'Arrow Right';
-      final isOk = key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.select || key == LogicalKeyboardKey.accept || key == LogicalKeyboardKey.numpadEnter || key.keyId == 0x100000161 || key.keyId == 0x10000000d;
-      final isBack = key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack || key == LogicalKeyboardKey.backspace || key.keyId == 0x100000803 || key.keyId == 0x100000008;
-
       if (isUp) {
         setState(() => _selectedIndex = _selectedIndex > 0 ? _selectedIndex - 1 : channels.length - 1);
       } else if (isDown) {
@@ -674,22 +711,14 @@ class _HomeScreenState extends State<HomeScreen> {
 
     // ========== 节目单模式 ==========
     if (isScheduleMode) {
-      if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack || key == LogicalKeyboardKey.backspace) {
+      if (isBack) {
         setState(() => isScheduleMode = false);
       }
       return;
     }
 
-    // ========== 无窗口状态（核心遥控器逻辑，参考酷9） ==========
-    final isUp = key == LogicalKeyboardKey.arrowUp || key == LogicalKeyboardKey.numpad8 || key == LogicalKeyboardKey.keyW || key.keyId == 0x100000304 || key.keyLabel == 'Arrow Up';
-    final isDown = key == LogicalKeyboardKey.arrowDown || key == LogicalKeyboardKey.numpad2 || key == LogicalKeyboardKey.keyS || key.keyId == 0x100000301 || key.keyLabel == 'Arrow Down';
-    final isLeft = key == LogicalKeyboardKey.arrowLeft || key == LogicalKeyboardKey.numpad4 || key == LogicalKeyboardKey.keyA || key.keyId == 0x100000302 || key.keyLabel == 'Arrow Left';
-    final isRight = key == LogicalKeyboardKey.arrowRight || key == LogicalKeyboardKey.numpad6 || key == LogicalKeyboardKey.keyD || key.keyId == 0x100000303 || key.keyLabel == 'Arrow Right';
-    final isOk = key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.select || key == LogicalKeyboardKey.accept || key == LogicalKeyboardKey.numpadEnter || key.keyId == 0x100000161 || key.keyId == 0x10000000d;
-    final isBack = key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack || key == LogicalKeyboardKey.backspace || key.keyId == 0x100000803 || key.keyId == 0x100000008;
-
+    // ========== 无窗口状态（参考酷9） ==========
     if (isOk) {
-      // OK键：显示频道列表
       setState(() {
         isScheduleMode = false;
         showChannelList = true;
@@ -697,38 +726,32 @@ class _HomeScreenState extends State<HomeScreen> {
         _showEpgInfo = false;
         _epgInfoHideTimer?.cancel();
         _focusArea = 'channelList';
-        _focusNode.requestFocus();
       });
     } else if (isBack) {
-      // 返回键：弹出退出菜单
       setState(() {
         _showExitMenu = true;
         _exitMenuSelectedIndex = 0;
         _focusArea = 'exitMenu';
       });
     } else if (isUp) {
-      // 上键：上一个频道
       if (channels.isNotEmpty) {
         final newIndex = _selectedIndex > 0 ? _selectedIndex - 1 : channels.length - 1;
         setState(() => _selectedIndex = newIndex);
         _switchChannel(channels[newIndex]);
       }
     } else if (isDown) {
-      // 下键：下一个频道
       if (channels.isNotEmpty) {
         final newIndex = _selectedIndex < channels.length - 1 ? _selectedIndex + 1 : 0;
         setState(() => _selectedIndex = newIndex);
         _switchChannel(channels[newIndex]);
       }
     } else if (isLeft) {
-      // 左键：上一个分组
       if (groups.isNotEmpty) {
         final currentIdx = groups.indexOf(currentGroup!);
         final prevIdx = (currentIdx - 1 + groups.length) % groups.length;
         _switchToGroup(groups[prevIdx]);
       }
     } else if (isRight) {
-      // 右键：下一个分组
       if (groups.isNotEmpty) {
         final currentIdx = groups.indexOf(currentGroup!);
         final nextIdx = (currentIdx + 1) % groups.length;
@@ -737,6 +760,10 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  void _handleKeyEvent(RawKeyEvent event) {
+    // RawKeyboardListener 的回调也走统一处理（带防抖不会重复触发）
+    _processKeyEvent(event.logicalKey, 'RawKeyboardListener');
+  }
   void _jumpToChannelNumber(String digits) {
     if (digits.isEmpty) return;
     final targetNumber = int.tryParse(digits);
