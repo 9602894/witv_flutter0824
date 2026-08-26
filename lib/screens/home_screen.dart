@@ -100,7 +100,8 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _initAsync();
 
-    // 新增：启动后请求焦点，确保遥控器可用
+    // 新增：请求焦点，确保遥控器事件送到 Flutter
+    // 如果这行导致黑屏，请注释掉下面三行
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _focusNode.requestFocus();
     });
@@ -243,8 +244,8 @@ class _HomeScreenState extends State<HomeScreen> {
     _epgInfoTimer?.cancel();
     _retryTimer?.cancel();
     _digitTimer?.cancel();
-    _channelNumberTimer?.cancel(); // 新增
-    _focusNode.dispose(); // 新增
+    _channelNumberTimer?.cancel();
+    _focusNode.dispose();
     _saveLayoutConfig();
     super.dispose();
   }
@@ -514,7 +515,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (event is! RawKeyDownEvent) return;
     final key = event.logicalKey;
 
-    // 退出对话框优先
+    // 退出对话框优先处理
     if (_showExitDialog) {
       _handleExitDialogKey(event);
       return;
@@ -567,7 +568,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (isEditMode || isScheduleMode) return;
 
     if (showChannelList) {
-      // 列表模式
+      // 列表模式（母版原有逻辑）
       if (key == LogicalKeyboardKey.arrowUp) {
         setState(() => _selectedIndex = _selectedIndex > 0 ? _selectedIndex - 1 : channels.length - 1);
       } else if (key == LogicalKeyboardKey.arrowDown) {
@@ -590,7 +591,7 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       }
     } else {
-      // 非列表模式
+      // 非列表模式（新增）
       if (key == LogicalKeyboardKey.arrowUp) {
         final currentIdx = currentChannel != null ? channels.indexOf(currentChannel!) : -1;
         final newIdx = currentIdx > 0 ? currentIdx - 1 : channels.length - 1;
@@ -665,7 +666,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _switchChannel(found);
     }
   }
-  // =======================
+  // ========================
 
   // === 新增：退出对话框按键处理 ===
   void _handleExitDialogKey(RawKeyEvent event) {
@@ -1081,7 +1082,7 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
 
-    // 修改：外层包 RawKeyboardListener，不用 WillPopScope
+    // 母版原样：RawKeyboardListener 包裹 Scaffold，不用 WillPopScope
     return RawKeyboardListener(
       focusNode: _focusNode,
       onKey: _handleKeyEvent,
@@ -1430,7 +1431,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
 
-            // === 新增：退出对话框（放在最上层） ===
+            // === 新增：退出对话框（放在 Stack 最上层） ===
             _buildExitDialog(),
           ],
         ),
