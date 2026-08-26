@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-/// 分组列表 - 支持遥控器焦点导航
 class GroupList extends StatefulWidget {
   final List<String> groups;
   final String? selectedGroup;
