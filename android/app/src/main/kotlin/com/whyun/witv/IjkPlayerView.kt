@@ -1,7 +1,6 @@
 package com.whyun.witv
 
 import android.content.Context
-import android.graphics.PixelFormat
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
@@ -28,17 +27,15 @@ class IjkPlayerView(
     init {
         decoderIndex = (creationParams?.get("decoderIndex") as? Int) ?: 0
 
-        // 从 creationParams 读取初始 url（双保险）
         val initialUrl = creationParams?.get("url") as? String
         if (initialUrl != null) {
             currentUrl = initialUrl
             pendingUrl = initialUrl
         }
 
-        // 修复花屏①：MediaOverlay 避免被 Flutter UI 覆盖闪烁
-        surfaceView.setZOrderMediaOverlay(true)
-        // 修复花屏②：固定像素格式
-        surfaceView.holder.setFormat(PixelFormat.RGBA_8888)
+        // 关键：禁用 SurfaceView 焦点，防止抢走遥控器按键
+        surfaceView.isFocusable = false
+        surfaceView.isFocusableInTouchMode = false
 
         methodChannel.setMethodCallHandler { call, result ->
             when (call.method) {
@@ -120,7 +117,7 @@ class IjkPlayerView(
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-avc", 1L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-hevc", 1L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-auto-rotate", 1L)
-            // 修复花屏③：华为 6110M 对动态分辨率支持不好，关闭
+            // 修复花屏：华为 6110M 对动态分辨率支持不好，关闭
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-handle-resolution-change", 0L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "framedrop", 1L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_CODEC, "skip_loop_filter", 48L)
