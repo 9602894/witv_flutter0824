@@ -88,9 +88,6 @@ class _HomeScreenState extends State<HomeScreen> {
   VoidCallback? _epgListener;
   bool _autoLoaded = false;
 
-  // 修改 A：添加焦点守护定时器
-  Timer? _focusCheckTimer;
-
   DateTime get _beijingNow => EpgParser.beijingNow;
   String _formatTime(DateTime time) => EpgParser.formatBeijingTime(time);
 
@@ -99,17 +96,9 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _initAsync();
 
-    // 修复：启动后立即获取焦点，确保遥控器按键生效
+    // 启动后请求一次焦点
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
-        _focusNode.requestFocus();
-        LogService.write('主页: 已请求焦点');
-      }
-    });
-
-    // 修改 A：每 500ms 检查一次焦点，被 PlatformView 抢走就抢回来
-    _focusCheckTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
-      if (mounted && !_focusNode.hasFocus && !_showExitDialog) {
         _focusNode.requestFocus();
       }
     });
@@ -269,10 +258,8 @@ class _HomeScreenState extends State<HomeScreen> {
     _saveLayoutConfig();
   }
 
-  // 修改 B：dispose 中取消定时器
   @override
   void dispose() {
-    _focusCheckTimer?.cancel();
     _epgInfoHideTimer?.cancel();
     if (_epgListener != null) {
       EpgParser.epgUpdateCounter.removeListener(_epgListener!);
@@ -656,7 +643,6 @@ class _HomeScreenState extends State<HomeScreen> {
           _showRightMenu = false;
           _showEpgInfo = false;
           _epgInfoHideTimer?.cancel();
-          _focusNode.requestFocus();
         });
       }
     }
@@ -1136,11 +1122,9 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
 
-    // 修改 C：build 方法去掉 autofocus
     return RawKeyboardListener(
       focusNode: _focusNode,
       onKey: _handleKeyEvent,
-      // autofocus: true,  // 已删除
       child: WillPopScope(
         onWillPop: () async {
           if (_showEpgInfo) {
@@ -1243,7 +1227,6 @@ class _HomeScreenState extends State<HomeScreen> {
                         _showRightMenu = false;
                         _showEpgInfo = false;
                         _epgInfoHideTimer?.cancel();
-                        _focusNode.requestFocus();
                       }
                     });
                   },
