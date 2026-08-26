@@ -79,7 +79,7 @@ class _HomeScreenState extends State<HomeScreen> {
   String _digitBuffer = '';
   String _digitDisplay = '';
   Timer? _digitTimer;
-  Timer? _digitHideTimer;   // 新增：用于自动隐藏数字显示
+  Timer? _digitHideTimer;
 
   VoidCallback? _epgListener;
   bool _autoLoaded = false;
@@ -87,6 +87,11 @@ class _HomeScreenState extends State<HomeScreen> {
   int _exitMenuSelectedIndex = 0;
   String _focusArea = 'none';
   int _rightMenuSelectedIndex = 0;
+
+  // ========== 新增：三栏焦点状态 ==========
+  String _focusColumn = 'center'; // 'left' = 订阅源, 'center' = 分组, 'right' = 频道
+  int _leftSelectedIndex = 0;     // 左列（订阅源）选中索引
+  int _centerSelectedIndex = 0;   // 中列（分组）选中索引（暂未使用，保留）
 
   DateTime get _beijingNow => EpgParser.beijingNow;
   String _formatTime(DateTime time) => EpgParser.formatBeijingTime(time);
@@ -99,10 +104,6 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _initAsync();
-
-    // 只保留 RawKeyboardListener 方式，移除重复的全局监听
-    // RawKeyboard.instance.addListener(_handleGlobalKeyEvent);   // 已移除
-    // HardwareKeyboard.instance.addHandler(_handleHardwareKeyEvent); // 已移除
 
     _epgListener = () {
       if (!mounted) return;
@@ -242,10 +243,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _epgInfoTimer?.cancel();
     _retryTimer?.cancel();
     _digitTimer?.cancel();
-    _digitHideTimer?.cancel();   // 新增
-    // 移除多余的监听
-    // RawKeyboard.instance.removeListener(_handleGlobalKeyEvent);
-    // HardwareKeyboard.instance.removeHandler(_handleHardwareKeyEvent);
+    _digitHideTimer?.cancel();   // 新增清理
     _focusNode.dispose();
     _saveLayoutConfig();
     super.dispose();
@@ -512,14 +510,14 @@ class _HomeScreenState extends State<HomeScreen> {
     _tryDownloadLogos();
   }
 
-  // ========== TV/遥控器按键处理（修改1完整替换） ==========
+  // ========== 新的按键处理方法（三栏焦点导航） ==========
   void _handleKeyEvent(RawKeyEvent event) {
     if (event is! RawKeyDownEvent) return;
     final key = event.logicalKey;
     final keyId = key.keyId;
     final label = key.keyLabel.toLowerCase();
 
-    // 超宽松按键识别（覆盖所有TV遥控器）
+    // 按键识别
     final isUp = key == LogicalKeyboardKey.arrowUp || key == LogicalKeyboardKey.numpad8 ||
                  keyId == 0x100000304 || keyId == 0x01000026 || label.contains('up');
     final isDown = key == LogicalKeyboardKey.arrowDown || key == LogicalKeyboardKey.numpad2 ||
@@ -588,31 +586,62 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    // ========== 频道列表打开时 ==========
+    // ========== 频道列表打开时（三栏焦点导航） ==========
     if (showChannelList && !isScheduleMode) {
-      if (channels.isEmpty) return;
-      if (isUp) {
-        setState(() => _selectedIndex = _selectedIndex > 0 ? _selectedIndex - 1 : channels.length - 1);
-      } else if (isDown) {
-        setState(() => _selectedIndex = _selectedIndex < channels.length - 1 ? _selectedIndex + 1 : 0);
-      } else if (isLeft) {
-        if (groups.isNotEmpty) {
-          final currentIdx = groups.indexOf(currentGroup!);
-          final prevIdx = (currentIdx - 1 + groups.length) % groups.length;
-          _switchToGroup(groups[prevIdx]);
-        }
-      } else if (isRight) {
-        if (groups.isNotEmpty) {
-          final currentIdx = groups.indexOf(currentGroup!);
-          final nextIdx = (currentIdx + 1) % groups.length;
-          _switchToGroup(groups[nextIdx]);
-        }
-      } else if (isOk) {
-        if (_selectedIndex >= 0 && _selectedIndex < channels.length) {
-          _switchChannel(channels[_selectedIndex]);
-        }
-      } else if (isBack || isMenu) {
+      if (isBack || isMenu) {
         setState(() => showChannelList = false);
+        return;
+      }
+
+      if (_focusColumn == 'center') {
+        // 中列（分组）焦点
+        if (groups.isEmpty) return;
+        final currentIdx = groups.indexOf(currentGroup ?? groups[0]);
+        if (isUp) {
+          final newIdx = currentIdx > 0 ? currentIdx - 1 : groups.length - 1;
+          _switchToGroup(groups[newIdx]);
+        } else if (isDown) {
+          final newIdx = currentIdx < groups.length - 1 ? currentIdx + 1 : 0;
+          _switchToGroup(groups[newIdx]);
+        } else if (isLeft) {
+          setState(() => _focusColumn = 'left');
+        } else if (isRight) {
+          setState(() => _focusColumn = 'right');
+        } else if (isOk) {
+          // OK 在分组列：切换到该分组并播放第一个频道
+          if (channels.isNotEmpty) {
+            _switchChannel(channels[0]);
+          }
+        }
+      } else if (_focusColumn == 'right') {
+        // 右列（频道）焦点
+        if (channels.isEmpty) return;
+        if (isUp) {
+          setState(() => _selectedIndex = _selectedIndex > 0 ? _selectedIndex - 1 : channels.length - 1);
+        } else if (isDown) {
+          setState(() => _selectedIndex = _selectedIndex < channels.length - 1 ? _selectedIndex + 1 : 0);
+        } else if (isLeft) {
+          setState(() => _focusColumn = 'center');
+        } else if (isOk) {
+          if (_selectedIndex >= 0 && _selectedIndex < channels.length) {
+            _switchChannel(channels[_selectedIndex]);
+          }
+        }
+      } else if (_focusColumn == 'left') {
+        // 左列（订阅源）焦点
+        final subs = Provider.of<SettingsService>(context, listen: false).subscriptions;
+        if (subs.isEmpty) return;
+        if (isUp) {
+          setState(() => _leftSelectedIndex = _leftSelectedIndex > 0 ? _leftSelectedIndex - 1 : subs.length - 1);
+        } else if (isDown) {
+          setState(() => _leftSelectedIndex = _leftSelectedIndex < subs.length - 1 ? _leftSelectedIndex + 1 : 0);
+        } else if (isRight) {
+          setState(() => _focusColumn = 'center');
+        } else if (isOk) {
+          if (_leftSelectedIndex >= 0 && _leftSelectedIndex < subs.length) {
+            _loadSubscriptionData(subs[_leftSelectedIndex]);
+          }
+        }
       }
       return;
     }
@@ -623,42 +652,37 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    // ========== 无窗口状态（参考TVBox） ==========
+    // ========== 无窗口状态 ==========
     if (isOk || isMenu) {
-      // OK/菜单键：显示频道列表
       setState(() {
         isScheduleMode = false;
         showChannelList = true;
         _showRightMenu = false;
         _showEpgInfo = false;
         _epgInfoHideTimer?.cancel();
+        _focusColumn = 'center';
       });
     } else if (isBack) {
-      // 返回键：弹出确认对话框
       _showExitDialog();
     } else if (isUp) {
-      // 上键：上一个频道
       if (channels.isNotEmpty) {
         final newIndex = _selectedIndex > 0 ? _selectedIndex - 1 : channels.length - 1;
         setState(() => _selectedIndex = newIndex);
         _switchChannel(channels[newIndex]);
       }
     } else if (isDown) {
-      // 下键：下一个频道
       if (channels.isNotEmpty) {
         final newIndex = _selectedIndex < channels.length - 1 ? _selectedIndex + 1 : 0;
         setState(() => _selectedIndex = newIndex);
         _switchChannel(channels[newIndex]);
       }
     } else if (isLeft) {
-      // 左键：上一个分组
       if (groups.isNotEmpty) {
         final currentIdx = groups.indexOf(currentGroup!);
         final prevIdx = (currentIdx - 1 + groups.length) % groups.length;
         _switchToGroup(groups[prevIdx]);
       }
     } else if (isRight) {
-      // 右键：下一个分组
       if (groups.isNotEmpty) {
         final currentIdx = groups.indexOf(currentGroup!);
         final nextIdx = (currentIdx + 1) % groups.length;
@@ -973,17 +997,11 @@ class _HomeScreenState extends State<HomeScreen> {
             return false;
           }
           if (showChannelList) {
-            setState(() {
-              showChannelList = false;
-              _focusArea = 'none';
-            });
+            setState(() => showChannelList = false);
             return false;
           }
           if (_showRightMenu) {
-            setState(() {
-              _showRightMenu = false;
-              _focusArea = 'none';
-            });
+            setState(() => _showRightMenu = false);
             return false;
           }
           if (_showExitMenu) {
@@ -1061,6 +1079,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         _showEpgInfo = false;
                         _epgInfoHideTimer?.cancel();
                         _focusNode.requestFocus();
+                        _focusColumn = 'center';
                       }
                     });
                   },
@@ -1076,7 +1095,21 @@ class _HomeScreenState extends State<HomeScreen> {
                     color: Colors.transparent,
                     child: Row(
                       children: [
-                        Expanded(flex: (subWeight * 100).toInt(), child: _buildSubscriptionList()),
+                        // 左列：订阅源（带焦点边框）
+                        Expanded(
+                          flex: (subWeight * 100).toInt(),
+                          child: Container(
+                            decoration: BoxDecoration(
+                              border: Border.all(
+                                color: showChannelList && _focusColumn == 'left'
+                                    ? Colors.yellow
+                                    : Colors.transparent,
+                                width: 2,
+                              ),
+                            ),
+                            child: _buildSubscriptionList(),
+                          ),
+                        ),
                         _buildDragBar(onDrag: (delta) {
                           setState(() {
                             double newSub = subWeight + delta;
@@ -1094,7 +1127,21 @@ class _HomeScreenState extends State<HomeScreen> {
                             }
                           });
                         }, isEditMode: isEditMode),
-                        Expanded(flex: (groupWeight * 100).toInt(), child: _buildGroupList()),
+                        // 中列：分组（带焦点边框）
+                        Expanded(
+                          flex: (groupWeight * 100).toInt(),
+                          child: Container(
+                            decoration: BoxDecoration(
+                              border: Border.all(
+                                color: showChannelList && _focusColumn == 'center'
+                                    ? Colors.yellow
+                                    : Colors.transparent,
+                                width: 2,
+                              ),
+                            ),
+                            child: _buildGroupList(),
+                          ),
+                        ),
                         _buildDragBar(onDrag: (delta) {
                           setState(() {
                             double newGroup = groupWeight + delta;
@@ -1112,43 +1159,54 @@ class _HomeScreenState extends State<HomeScreen> {
                             }
                           });
                         }, isEditMode: isEditMode),
+                        // 右列：频道列表（带焦点边框）
                         Expanded(
                           flex: (channelWeight * 100).toInt(),
-                          child: Stack(
-                            children: [
-                              Positioned.fill(
-                                child: ListView.builder(
-                                  itemCount: channels.length,
-                                  itemBuilder: (context, index) =>
-                                      _buildChannelItem(channels[index], index),
-                                ),
+                          child: Container(
+                            decoration: BoxDecoration(
+                              border: Border.all(
+                                color: showChannelList && _focusColumn == 'right'
+                                    ? Colors.yellow
+                                    : Colors.transparent,
+                                width: 2,
                               ),
-                              Positioned(
-                                right: 20 - channelListButtonOffset.dx,
-                                top: _channelButtonInitTop + channelListButtonOffset.dy,
-                                child: GestureDetector(
-                                  onPanUpdate: (details) {
-                                    if (!isEditMode) return;
-                                    setState(() => channelListButtonOffset += details.delta);
-                                  },
-                                  onTap: () => setState(() {
-                                    isScheduleMode = true;
-                                    showChannelList = false;
-                                  }),
-                                  child: Container(
-                                    width: 26, height: 80, color: Colors.transparent,
-                                    child: const Column(
-                                      mainAxisAlignment: MainAxisAlignment.center,
-                                      children: [
-                                        Text('节', style: TextStyle(color: Colors.white, fontSize: 13)),
-                                        Text('目', style: TextStyle(color: Colors.white, fontSize: 13)),
-                                        Text('单', style: TextStyle(color: Colors.white, fontSize: 13)),
-                                      ],
+                            ),
+                            child: Stack(
+                              children: [
+                                Positioned.fill(
+                                  child: ListView.builder(
+                                    itemCount: channels.length,
+                                    itemBuilder: (context, index) =>
+                                        _buildChannelItem(channels[index], index),
+                                  ),
+                                ),
+                                Positioned(
+                                  right: 20 - channelListButtonOffset.dx,
+                                  top: _channelButtonInitTop + channelListButtonOffset.dy,
+                                  child: GestureDetector(
+                                    onPanUpdate: (details) {
+                                      if (!isEditMode) return;
+                                      setState(() => channelListButtonOffset += details.delta);
+                                    },
+                                    onTap: () => setState(() {
+                                      isScheduleMode = true;
+                                      showChannelList = false;
+                                    }),
+                                    child: Container(
+                                      width: 26, height: 80, color: Colors.transparent,
+                                      child: const Column(
+                                        mainAxisAlignment: MainAxisAlignment.center,
+                                        children: [
+                                          Text('节', style: TextStyle(color: Colors.white, fontSize: 13)),
+                                          Text('目', style: TextStyle(color: Colors.white, fontSize: 13)),
+                                          Text('单', style: TextStyle(color: Colors.white, fontSize: 13)),
+                                        ],
+                                      ),
                                     ),
                                   ),
                                 ),
-                              ),
-                            ],
+                              ],
+                            ),
                           ),
                         ),
                       ],
