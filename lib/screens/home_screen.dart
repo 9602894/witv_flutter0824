@@ -86,8 +86,8 @@ class _HomeScreenState extends State<HomeScreen> {
   String _digitDisplay = '';
   Timer? _digitHideTimer;
 
-  // ---------- 新增焦点列控制 ----------
-  bool _focusOnGroup = false; // true=焦点在分组列，false=焦点在频道列
+  // 焦点控制
+  bool _focusOnGroup = false;
 
   DateTime get _beijingNow => EpgParser.beijingNow;
   String _formatTime(DateTime time) => EpgParser.formatBeijingTime(time);
@@ -167,6 +167,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  // ======================== 布局配置 ========================
   Future<void> _initLayoutConfigFile() async {
     try {
       final dir = await getApplicationDocumentsDirectory();
@@ -229,6 +230,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _saveLayoutConfig();
   }
 
+  // ======================== 生命周期 ========================
   @override
   void dispose() {
     _epgInfoHideTimer?.cancel();
@@ -245,6 +247,7 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
+  // ======================== EPG 相关 ========================
   void _initEpgScheduler() {
     _epgUpdateTimer = Timer.periodic(const Duration(hours: 6), (_) {
       _checkEpgUpdate();
@@ -304,6 +307,7 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
+  // ======================== 播放器重试 ========================
   void _scheduleRetry() {
     _retryTimer?.cancel();
     _retryChannel = currentChannel;
@@ -330,6 +334,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _retryChannel = null;
   }
 
+  // ======================== 频道 / 分组切换 ========================
   void _switchChannel(Channel ch) {
     _cancelRetry();
     _digitBuffer = '';
@@ -340,7 +345,6 @@ class _HomeScreenState extends State<HomeScreen> {
       currentChannel = ch;
       _selectedIndex = channels.indexOf(ch);
       _updateEpgInfo();
-      // 切换频道后，焦点自动回到频道列
       _focusOnGroup = false;
     });
 
@@ -360,13 +364,12 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       currentGroup = groupName;
       channels = groupChannels;
-      // 切换分组后，选中第一个频道，并将焦点移到频道列
       if (channels.isNotEmpty) {
         _selectedIndex = 0;
         currentChannel = channels.first;
         _updateEpgInfo();
         _showEpgInfoTemporarily();
-        _focusOnGroup = false; // 焦点回到频道列
+        _focusOnGroup = false;
       } else {
         _selectedIndex = -1;
         currentChannel = null;
@@ -381,7 +384,138 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // ---------- 修改后的按键处理 ----------
+  // ======================== 订阅源加载 ========================
+  Future<void> _loadSubscriptionData(Subscription sub) async {
+    try {
+      final url = sub.url;
+      final cacheFile = await PlaylistParser.getCacheFile(url, sub.name);
+
+      if (await cacheFile.exists()) {
+        try {
+          final content = await cacheFile.readAsString();
+          final groupMap = PlaylistParser.parseFromString(content);
+          if (groupMap.isNotEmpty) {
+            _applyGroupMap(groupMap, sub.name);
+          }
+        } catch (e) {
+          LogService.write('缓存解析失败: $e');
+        }
+      }
+
+      if (!await cacheFile.exists() || channels.isEmpty) {
+        final groupMap = await PlaylistParser.parseFromUrl(url);
+        if (groupMap.isNotEmpty) {
+          await PlaylistParser.saveCache(groupMap, url, sub.name);
+          _applyGroupMap(groupMap, sub.name);
+        } else {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('订阅源加载失败')),
+            );
+          }
+        }
+        return;
+      }
+
+      if (!_isUpdatingSubscription) {
+        _isUpdatingSubscription = true;
+        Future.delayed(const Duration(seconds: 2), () async {
+          try {
+            final newMap = await PlaylistParser.parseFromUrl(url);
+            if (newMap.isNotEmpty) {
+              final oldCount = _fullGroupMap?.values.expand((l) => l).length ?? 0;
+              final newCount = newMap.values.expand((l) => l).length;
+              if (oldCount != newCount || newMap.keys.length != groups.length) {
+                await PlaylistParser.saveCache(newMap, url, sub.name);
+                if (mounted && currentSubName == sub.name) {
+                  _applyGroupMap(newMap, sub.name);
+                }
+              }
+            }
+          } catch (e) {
+            LogService.write('后台更新失败: $e');
+          } finally {
+            _isUpdatingSubscription = false;
+          }
+        });
+      }
+    } catch (e, stack) {
+      LogService.writeCrashLog('加载订阅源异常: $e', stack);
+    }
+  }
+
+  void _applyGroupMap(Map<String, List<Channel>> groupMap, String subName) {
+    if (groupMap.isEmpty) return;
+
+    final m3uLogos = <String, String>{};
+    for (final list in groupMap.values) {
+      for (final ch in list) {
+        if (ch.logoUrl != null && ch.logoUrl!.isNotEmpty) {
+          m3uLogos[ch.name] = ch.logoUrl!;
+        }
+      }
+    }
+    _logoService.updateM3uLogos(m3uLogos);
+    _fullGroupMap = groupMap;
+
+    setState(() {
+      groups = groupMap.keys.toList();
+      if (groups.isNotEmpty) {
+        if (currentGroup == null || !groups.contains(currentGroup)) {
+          currentGroup = groups.first;
+        }
+        final groupChannels = groupMap[currentGroup];
+        if (groupChannels != null && groupChannels.isNotEmpty) {
+          channels = groupChannels;
+          if (currentChannel == null && channels.isNotEmpty) {
+            final lastChannel = Provider.of<SettingsService>(context, listen: false).getLastChannel();
+            if (lastChannel != null) {
+              Channel? found;
+              for (final list in groupMap.values) {
+                try {
+                  found = list.firstWhere((ch) => ch.name == lastChannel);
+                  break;
+                } catch (_) {}
+              }
+              if (found != null) {
+                currentChannel = found;
+                _selectedIndex = channels.indexOf(found);
+              } else {
+                currentChannel = channels.first;
+                _selectedIndex = 0;
+              }
+            } else {
+              currentChannel = channels.first;
+              _selectedIndex = 0;
+            }
+            _showEpgInfoTemporarily();
+            _updateEpgInfo();
+          } else if (currentChannel != null && channels.contains(currentChannel)) {
+            _selectedIndex = channels.indexOf(currentChannel!);
+          } else {
+            _selectedIndex = -1;
+          }
+        } else {
+          for (final g in groups) {
+            final chs = groupMap[g];
+            if (chs != null && chs.isNotEmpty) {
+              currentGroup = g;
+              channels = chs;
+              break;
+            }
+          }
+        }
+      }
+      currentSubName = subName;
+    });
+
+    if (currentChannel != null) {
+      _updateEpgInfo();
+    }
+    _tryDownloadLogos();
+  }
+
+  // ======================== TVBox 风格按键处理 ========================
   void _handleKeyEvent(RawKeyEvent event) {
     if (event is! RawKeyDownEvent) return;
     final key = event.logicalKey;
@@ -474,30 +608,24 @@ class _HomeScreenState extends State<HomeScreen> {
     if (showChannelList && !isScheduleMode) {
       if (channels.isEmpty) return;
 
-      // 左右键切换焦点列
       if (isLeft) {
-        if (!_focusOnGroup) {
-          setState(() => _focusOnGroup = true);
-        }
+        if (!_focusOnGroup) setState(() => _focusOnGroup = true);
         return;
       } else if (isRight) {
-        if (_focusOnGroup) {
-          setState(() => _focusOnGroup = false);
-        }
+        if (_focusOnGroup) setState(() => _focusOnGroup = false);
         return;
       }
 
-      // 上下键根据焦点列执行不同操作
       if (isUp) {
         if (_focusOnGroup) {
-          // 焦点在分组列：切换到上一个分组
+          // 分组列：切换分组
           if (groups.isNotEmpty) {
             final currentIdx = groups.indexOf(currentGroup!);
             final prevIdx = (currentIdx - 1 + groups.length) % groups.length;
             _switchToGroup(groups[prevIdx]);
           }
         } else {
-          // 焦点在频道列：切换到上一个频道，边界跳转分组
+          // 频道列：上一个频道，边界跳转分组
           if (_selectedIndex > 0) {
             setState(() => _selectedIndex--);
           } else {
@@ -505,7 +633,6 @@ class _HomeScreenState extends State<HomeScreen> {
               final currentIdx = groups.indexOf(currentGroup!);
               final prevIdx = (currentIdx - 1 + groups.length) % groups.length;
               _switchToGroup(groups[prevIdx]);
-              // _switchToGroup 内部已将焦点置为频道列，并选中第一个，但我们需要选中最后一个
               if (channels.isNotEmpty) {
                 setState(() {
                   _selectedIndex = channels.length - 1;
@@ -519,14 +646,12 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       } else if (isDown) {
         if (_focusOnGroup) {
-          // 焦点在分组列：切换到下一个分组
           if (groups.isNotEmpty) {
             final currentIdx = groups.indexOf(currentGroup!);
             final nextIdx = (currentIdx + 1) % groups.length;
             _switchToGroup(groups[nextIdx]);
           }
         } else {
-          // 焦点在频道列：切换到下一个频道，边界跳转分组
           if (_selectedIndex < channels.length - 1) {
             setState(() => _selectedIndex++);
           } else {
@@ -534,7 +659,6 @@ class _HomeScreenState extends State<HomeScreen> {
               final currentIdx = groups.indexOf(currentGroup!);
               final nextIdx = (currentIdx + 1) % groups.length;
               _switchToGroup(groups[nextIdx]);
-              // _switchToGroup 内部已将焦点置为频道列，并选中第一个
               if (channels.isNotEmpty) {
                 setState(() {
                   _selectedIndex = 0;
@@ -547,16 +671,12 @@ class _HomeScreenState extends State<HomeScreen> {
           }
         }
       } else if (isOk) {
-        // OK键：如果焦点在分组列，则切换到该分组并自动将焦点移到频道列
         if (_focusOnGroup) {
-          // 已在分组列，直接切换分组（但当前选中分组已由currentGroup表示）
-          // 这里可以不做额外操作，因为切换分组已经由上下键完成；OK键可视为确认选择当前分组，即切换到频道列
           setState(() => _focusOnGroup = false);
           if (channels.isNotEmpty && currentChannel == null) {
             _switchChannel(channels.first);
           }
         } else {
-          // 焦点在频道列，则播放选中频道
           if (_selectedIndex >= 0 && _selectedIndex < channels.length) {
             _switchChannel(channels[_selectedIndex]);
           }
@@ -569,10 +689,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     // ---------- 节目单模式 ----------
     if (isScheduleMode) {
-      if (isBack) {
-        setState(() => isScheduleMode = false);
-      }
-      // 如需在节目单中增加左右键滚动时间，可在此扩展
+      if (isBack) setState(() => isScheduleMode = false);
       return;
     }
 
@@ -584,13 +701,11 @@ class _HomeScreenState extends State<HomeScreen> {
         _showRightMenu = false;
         _showEpgInfo = false;
         _epgInfoHideTimer?.cancel();
-        // 显示频道列表时默认焦点在频道列
         _focusOnGroup = false;
       });
     } else if (isBack) {
       setState(() { _showExitMenu = true; _exitMenuSelectedIndex = 0; });
     } else if (isUp) {
-      // 切换上一个频道，边界跳转分组
       if (channels.isNotEmpty) {
         if (_selectedIndex > 0) {
           setState(() => _selectedIndex--);
@@ -612,7 +727,6 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       }
     } else if (isDown) {
-      // 切换下一个频道，边界跳转分组
       if (channels.isNotEmpty) {
         if (_selectedIndex < channels.length - 1) {
           setState(() => _selectedIndex++);
@@ -634,22 +748,28 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       }
     }
-    // 左右键在全屏播放时可预留为快进/快退，本修改不实现
+    // 左右键在全屏无操作（可预留快进/快退）
   }
 
-  // 其他辅助方法（原样）
   void _executeRightMenuAction(int index) {
     setState(() => _showRightMenu = false);
     switch (index) {
       case 0:
-        Navigator.push(context, MaterialPageRoute(builder: (_) => SettingsScreen())).then((_) => setState(() {}));
+        Navigator.push(context, MaterialPageRoute(builder: (_) => SettingsScreen()))
+            .then((_) => setState(() {}));
         break;
       case 1:
-        if (isEditMode) { _exitEditMode(); } else { setState(() => isEditMode = true); }
+        if (isEditMode) _exitEditMode();
+        else setState(() => isEditMode = true);
         break;
-      case 2: _showAddSubscriptionDialog(); break;
-      case 3: _showAddEpgDialog(); break;
-      case 4: break;
+      case 2:
+        _showAddSubscriptionDialog();
+        break;
+      case 3:
+        _showAddEpgDialog();
+        break;
+      case 4:
+        break;
     }
   }
 
@@ -664,11 +784,10 @@ class _HomeScreenState extends State<HomeScreen> {
         break;
       }
     }
-    if (found != null) {
-      _switchChannel(found);
-    }
+    if (found != null) _switchChannel(found);
   }
 
+  // ======================== UI 构建 ========================
   Widget _buildTag(String text) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
@@ -676,13 +795,7 @@ class _HomeScreenState extends State<HomeScreen> {
         color: Colors.white.withOpacity(0.15),
         borderRadius: BorderRadius.circular(4),
       ),
-      child: Text(
-        text,
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 11,
-        ),
-      ),
+      child: Text(text, style: const TextStyle(color: Colors.white, fontSize: 11)),
     );
   }
 
@@ -694,27 +807,19 @@ class _HomeScreenState extends State<HomeScreen> {
     if (current != null) {
       final now = EpgParser.beijingNow;
       final diff = current.stop.difference(now);
-      if (diff.inMinutes > 0) {
-        timeRemaining = '距结束：${diff.inMinutes}分钟';
-      }
+      if (diff.inMinutes > 0) timeRemaining = '距结束：${diff.inMinutes}分钟';
     }
 
     final List<String> tags = [];
-    if (currentSpeed > 0) {
-      tags.add('${currentSpeed.toStringAsFixed(2)}MB/s');
-    }
+    if (currentSpeed > 0) tags.add('${currentSpeed.toStringAsFixed(2)}MB/s');
     tags.add('线路1/1');
 
     return Visibility(
       visible: _showEpgInfo,
       child: Container(
-        margin: EdgeInsets.symmetric(
-          horizontal: MediaQuery.of(context).size.width * 0.15,
-        ),
+        margin: EdgeInsets.symmetric(horizontal: MediaQuery.of(context).size.width * 0.15),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        decoration: const BoxDecoration(
-          color: Colors.transparent,
-        ),
+        decoration: const BoxDecoration(color: Colors.transparent),
         child: SafeArea(
           top: false,
           child: Column(
@@ -725,12 +830,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   if (currentChannel != null)
-                    ChannelLogo(
-                      channelName: currentChannel!.name,
-                      width: 80,
-                      height: 50,
-                      fit: BoxFit.contain,
-                    )
+                    ChannelLogo(channelName: currentChannel!.name, width: 80, height: 50, fit: BoxFit.contain)
                   else
                     const SizedBox(width: 80, height: 50),
                   const SizedBox(width: 12),
@@ -742,11 +842,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           currentChannel != null && currentChannel!.number != null
                               ? '${currentChannel!.number}. ${currentChannel!.name}'
                               : (currentChannel?.name ?? ''),
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 20,
-                            fontWeight: FontWeight.bold,
-                          ),
+                          style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
                         ),
                       ],
                     ),
@@ -762,13 +858,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       if (timeRemaining != null)
                         Padding(
                           padding: const EdgeInsets.only(top: 4),
-                          child: Text(
-                            timeRemaining,
-                            style: const TextStyle(
-                              color: Colors.white70,
-                              fontSize: 13,
-                            ),
-                          ),
+                          child: Text(timeRemaining, style: const TextStyle(color: Colors.white70, fontSize: 13)),
                         ),
                     ],
                   ),
@@ -778,38 +868,23 @@ class _HomeScreenState extends State<HomeScreen> {
               if (current != null)
                 Text(
                   '正在播放：${EpgParser.formatBeijingTime(current.start)} - ${EpgParser.formatBeijingTime(current.stop)}  ${current.title}',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 14,
-                  ),
+                  style: const TextStyle(color: Colors.white, fontSize: 14),
                 ),
               if (current?.description?.isNotEmpty == true)
                 Padding(
                   padding: const EdgeInsets.only(top: 4),
-                  child: Text(
-                    current!.description!,
-                    style: const TextStyle(
-                      color: Colors.white70,
-                      fontSize: 13,
-                    ),
-                  ),
+                  child: Text(current!.description!, style: const TextStyle(color: Colors.white70, fontSize: 13)),
                 )
               else
                 const Padding(
                   padding: EdgeInsets.only(top: 4),
-                  child: Text(
-                    '暂无描述信息',
-                    style: TextStyle(color: Colors.white54, fontSize: 13),
-                  ),
+                  child: Text('暂无描述信息', style: TextStyle(color: Colors.white54, fontSize: 13)),
                 ),
               const SizedBox(height: 4),
               if (next != null)
                 Text(
                   '下一节目：${EpgParser.formatBeijingTime(next.start)} - ${EpgParser.formatBeijingTime(next.stop)}  ${next.title}',
-                  style: const TextStyle(
-                    color: Colors.white70,
-                    fontSize: 13,
-                  ),
+                  style: const TextStyle(color: Colors.white70, fontSize: 13),
                 ),
             ],
           ),
@@ -849,17 +924,11 @@ class _HomeScreenState extends State<HomeScreen> {
       subtitle: currentEpg != null
           ? Text(
               '${EpgParser.formatBeijingTime(currentEpg.start)}-${EpgParser.formatBeijingTime(currentEpg.stop)} ${currentEpg.title}',
-              style: TextStyle(
-                color: isSelected ? Colors.yellow.withOpacity(0.8) : Colors.white70,
-                fontSize: 11,
-              ),
+              style: TextStyle(color: isSelected ? Colors.yellow.withOpacity(0.8) : Colors.white70, fontSize: 11),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             )
-          : Text(
-              '暂无节目信息',
-              style: TextStyle(color: Colors.white38, fontSize: 11),
-            ),
+          : Text('暂无节目信息', style: TextStyle(color: Colors.white38, fontSize: 11)),
       onTap: () => _switchChannel(channel),
     );
   }
@@ -872,9 +941,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (currentChannel != null && channels.isNotEmpty) {
       final idx = channels.indexOf(currentChannel!);
-      if (idx != _selectedIndex && idx >= 0) {
-        _selectedIndex = idx;
-      }
+      if (idx != _selectedIndex && idx >= 0) _selectedIndex = idx;
     }
 
     return RawKeyboardListener(
@@ -909,6 +976,7 @@ class _HomeScreenState extends State<HomeScreen> {
         child: Scaffold(
           body: Stack(
             children: [
+              // 播放器
               if (currentChannel != null && currentChannel!.url.isNotEmpty)
                 Positioned.fill(
                   child: IjkPlayerWidget(
@@ -922,16 +990,16 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
 
+              // 点击显示 EPG
               if (!_showEpgInfo)
                 Positioned.fill(
                   child: GestureDetector(
                     behavior: HitTestBehavior.translucent,
-                    onTap: () {
-                      _showEpgInfoTemporarily();
-                    },
+                    onTap: _showEpgInfoTemporarily,
                   ),
                 ),
 
+              // 左侧边缘手势
               Positioned(
                 left: 0, top: 0, bottom: 0, width: 40,
                 child: GestureDetector(
@@ -956,6 +1024,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
 
+              // 频道列表 / 节目单
               if (showChannelList && !isScheduleMode)
                 Positioned(
                   left: 0, top: 0, bottom: 0,
@@ -965,48 +1034,52 @@ class _HomeScreenState extends State<HomeScreen> {
                     child: Row(
                       children: [
                         Expanded(flex: (subWeight * 100).toInt(), child: _buildSubscriptionList()),
-                        _buildDragBar(onDrag: (delta) {
-                          setState(() {
-                            double newSub = subWeight + delta;
-                            double newGroup = groupWeight - delta;
-                            if (newSub < 0.05) newSub = 0.05;
-                            if (newGroup < 0.05) newGroup = 0.05;
-                            subWeight = newSub;
-                            groupWeight = newGroup;
-                            channelWeight = 1 - subWeight - groupWeight;
-                            if (channelWeight < 0.05) {
-                              channelWeight = 0.05;
-                              final total = subWeight + groupWeight;
-                              subWeight = subWeight / total * 0.95;
-                              groupWeight = groupWeight / total * 0.95;
-                            }
-                          });
-                        }, isEditMode: isEditMode),
+                        _buildDragBar(
+                          onDrag: (delta) {
+                            setState(() {
+                              double newSub = subWeight + delta;
+                              double newGroup = groupWeight - delta;
+                              if (newSub < 0.05) newSub = 0.05;
+                              if (newGroup < 0.05) newGroup = 0.05;
+                              subWeight = newSub;
+                              groupWeight = newGroup;
+                              channelWeight = 1 - subWeight - groupWeight;
+                              if (channelWeight < 0.05) {
+                                channelWeight = 0.05;
+                                final total = subWeight + groupWeight;
+                                subWeight = subWeight / total * 0.95;
+                                groupWeight = groupWeight / total * 0.95;
+                              }
+                            });
+                          },
+                          isEditMode: isEditMode,
+                        ),
                         Expanded(flex: (groupWeight * 100).toInt(), child: _buildGroupListWithFocus()),
-                        _buildDragBar(onDrag: (delta) {
-                          setState(() {
-                            double newGroup = groupWeight + delta;
-                            double newChannel = channelWeight - delta;
-                            if (newGroup < 0.05) newGroup = 0.05;
-                            if (newChannel < 0.05) newChannel = 0.05;
-                            groupWeight = newGroup;
-                            channelWeight = newChannel;
-                            subWeight = 1 - groupWeight - channelWeight;
-                            if (subWeight < 0.05) {
-                              subWeight = 0.05;
-                              final total = groupWeight + channelWeight;
-                              groupWeight = groupWeight / total * 0.95;
-                              channelWeight = channelWeight / total * 0.95;
-                            }
-                          });
-                        }, isEditMode: isEditMode),
+                        _buildDragBar(
+                          onDrag: (delta) {
+                            setState(() {
+                              double newGroup = groupWeight + delta;
+                              double newChannel = channelWeight - delta;
+                              if (newGroup < 0.05) newGroup = 0.05;
+                              if (newChannel < 0.05) newChannel = 0.05;
+                              groupWeight = newGroup;
+                              channelWeight = newChannel;
+                              subWeight = 1 - groupWeight - channelWeight;
+                              if (subWeight < 0.05) {
+                                subWeight = 0.05;
+                                final total = groupWeight + channelWeight;
+                                groupWeight = groupWeight / total * 0.95;
+                                channelWeight = channelWeight / total * 0.95;
+                              }
+                            });
+                          },
+                          isEditMode: isEditMode,
+                        ),
                         Expanded(
                           flex: (channelWeight * 100).toInt(),
                           child: Stack(
                             children: [
-                              Positioned.fill(
-                                child: _buildChannelListWithFocus(),
-                              ),
+                              Positioned.fill(child: _buildChannelListWithFocus()),
                               Positioned(
                                 right: 20 - channelListButtonOffset.dx,
                                 top: _channelButtonInitTop + channelListButtonOffset.dy,
@@ -1049,48 +1122,53 @@ class _HomeScreenState extends State<HomeScreen> {
                       Row(
                         children: [
                           Expanded(flex: (scheduleGroupWeight * 100).toInt(), child: _buildGroupList()),
-                          _buildDragBar(onDrag: (delta) {
-                            setState(() {
-                              double newGroup = scheduleGroupWeight + delta;
-                              double newChannel = scheduleChannelWeight - delta;
-                              if (newGroup < 0.05) newGroup = 0.05;
-                              if (newChannel < 0.05) newChannel = 0.05;
-                              scheduleGroupWeight = newGroup;
-                              scheduleChannelWeight = newChannel;
-                              scheduleWeight = 1 - newGroup - newChannel;
-                              if (scheduleWeight < 0.05) {
-                                scheduleWeight = 0.05;
-                                final total = newGroup + newChannel;
-                                scheduleGroupWeight = scheduleGroupWeight / total * 0.95;
-                                scheduleChannelWeight = scheduleChannelWeight / total * 0.95;
-                              }
-                            });
-                          }, isEditMode: isEditMode),
+                          _buildDragBar(
+                            onDrag: (delta) {
+                              setState(() {
+                                double newGroup = scheduleGroupWeight + delta;
+                                double newChannel = scheduleChannelWeight - delta;
+                                if (newGroup < 0.05) newGroup = 0.05;
+                                if (newChannel < 0.05) newChannel = 0.05;
+                                scheduleGroupWeight = newGroup;
+                                scheduleChannelWeight = newChannel;
+                                scheduleWeight = 1 - newGroup - newChannel;
+                                if (scheduleWeight < 0.05) {
+                                  scheduleWeight = 0.05;
+                                  final total = newGroup + newChannel;
+                                  scheduleGroupWeight = scheduleGroupWeight / total * 0.95;
+                                  scheduleChannelWeight = scheduleChannelWeight / total * 0.95;
+                                }
+                              });
+                            },
+                            isEditMode: isEditMode,
+                          ),
                           Expanded(
                             flex: (scheduleChannelWeight * 100).toInt(),
                             child: ListView.builder(
                               itemCount: channels.length,
-                              itemBuilder: (context, index) =>
-                                  _buildChannelItem(channels[index], index),
+                              itemBuilder: (context, index) => _buildChannelItem(channels[index], index),
                             ),
                           ),
-                          _buildDragBar(onDrag: (delta) {
-                            setState(() {
-                              double newChannel = scheduleChannelWeight + delta;
-                              double newSchedule = scheduleWeight - delta;
-                              if (newChannel < 0.05) newChannel = 0.05;
-                              if (newSchedule < 0.05) newSchedule = 0.05;
-                              scheduleChannelWeight = newChannel;
-                              scheduleWeight = newSchedule;
-                              scheduleGroupWeight = 1 - newChannel - newSchedule;
-                              if (scheduleGroupWeight < 0.05) {
-                                scheduleGroupWeight = 0.05;
-                                final total = newChannel + newSchedule;
-                                scheduleChannelWeight = scheduleChannelWeight / total * 0.95;
-                                scheduleWeight = scheduleWeight / total * 0.95;
-                              }
-                            });
-                          }, isEditMode: isEditMode),
+                          _buildDragBar(
+                            onDrag: (delta) {
+                              setState(() {
+                                double newChannel = scheduleChannelWeight + delta;
+                                double newSchedule = scheduleWeight - delta;
+                                if (newChannel < 0.05) newChannel = 0.05;
+                                if (newSchedule < 0.05) newSchedule = 0.05;
+                                scheduleChannelWeight = newChannel;
+                                scheduleWeight = newSchedule;
+                                scheduleGroupWeight = 1 - newChannel - newSchedule;
+                                if (scheduleGroupWeight < 0.05) {
+                                  scheduleGroupWeight = 0.05;
+                                  final total = newChannel + newSchedule;
+                                  scheduleChannelWeight = scheduleChannelWeight / total * 0.95;
+                                  scheduleWeight = scheduleWeight / total * 0.95;
+                                }
+                              });
+                            },
+                            isEditMode: isEditMode,
+                          ),
                           Expanded(
                             flex: (scheduleWeight * 100).toInt(),
                             child: ScheduleView(
@@ -1140,6 +1218,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
 
+              // EPG 信息栏
               Positioned(
                 left: 0,
                 right: 0,
@@ -1147,6 +1226,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: _buildEpgInfoBar(),
               ),
 
+              // 右侧菜单
               if (_showRightMenu)
                 Positioned(
                   top: 0, right: 0, bottom: 0,
@@ -1162,11 +1242,8 @@ class _HomeScreenState extends State<HomeScreen> {
                           setState(() => _showRightMenu = false);
                         }, 0),
                         _buildMenuItem(Icons.edit, '编辑', () {
-                          if (isEditMode) {
-                            _exitEditMode();
-                          } else {
-                            setState(() => isEditMode = true);
-                          }
+                          if (isEditMode) _exitEditMode();
+                          else setState(() => isEditMode = true);
                           setState(() => _showRightMenu = false);
                         }, 1),
                         _buildMenuItem(Icons.list, '列表订阅', () {
@@ -1220,7 +1297,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
 
-              // 数字键输入显示
+              // 数字键显示
               if (_digitDisplay.isNotEmpty)
                 Positioned(
                   top: 60,
@@ -1238,6 +1315,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
 
+              // 右上角按钮
               Positioned(
                 top: 0, right: 0,
                 child: Row(
@@ -1245,11 +1323,8 @@ class _HomeScreenState extends State<HomeScreen> {
                     IconButton(
                       icon: const Icon(Icons.edit, color: Colors.white),
                       onPressed: () {
-                        if (isEditMode) {
-                          _exitEditMode();
-                        } else {
-                          setState(() => isEditMode = true);
-                        }
+                        if (isEditMode) _exitEditMode();
+                        else setState(() => isEditMode = true);
                       },
                     ),
                     IconButton(
@@ -1272,40 +1347,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // ---------- 新增带焦点指示的分组列表和频道列表 ----------
-  Widget _buildGroupListWithFocus() {
-    return Container(
-      decoration: BoxDecoration(
-        border: _focusOnGroup
-            ? Border.all(color: Colors.yellow, width: 2)
-            : null,
-      ),
-      child: GroupList(
-        groups: groups,
-        selectedGroup: currentGroup,
-        onSelect: (group) {
-          _switchToGroup(group);
-          // 切换分组后焦点自动移至频道列
-          setState(() => _focusOnGroup = false);
-        },
-      ),
-    );
-  }
-
-  Widget _buildChannelListWithFocus() {
-    return Container(
-      decoration: BoxDecoration(
-        border: !_focusOnGroup
-            ? Border.all(color: Colors.yellow, width: 2)
-            : null,
-      ),
-      child: ListView.builder(
-        itemCount: channels.length,
-        itemBuilder: (context, index) => _buildChannelItem(channels[index], index),
-      ),
-    );
-  }
-
+  // ======================== 辅助 UI 组件 ========================
   Widget _buildDragBar({required void Function(double) onDrag, required bool isEditMode}) {
     if (!isEditMode) return const SizedBox.shrink();
     return GestureDetector(
@@ -1382,12 +1424,38 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  void _showAddSubscriptionDialog() {}
+  Widget _buildGroupListWithFocus() {
+    return Container(
+      decoration: BoxDecoration(
+        border: _focusOnGroup ? Border.all(color: Colors.yellow, width: 2) : null,
+      ),
+      child: GroupList(
+        groups: groups,
+        selectedGroup: currentGroup,
+        onSelect: (group) {
+          _switchToGroup(group);
+          setState(() => _focusOnGroup = false);
+        },
+      ),
+    );
+  }
 
+  Widget _buildChannelListWithFocus() {
+    return Container(
+      decoration: BoxDecoration(
+        border: !_focusOnGroup ? Border.all(color: Colors.yellow, width: 2) : null,
+      ),
+      child: ListView.builder(
+        itemCount: channels.length,
+        itemBuilder: (context, index) => _buildChannelItem(channels[index], index),
+      ),
+    );
+  }
+
+  // ======================== 占位对话框 ========================
+  void _showAddSubscriptionDialog() {}
   void _showAddEpgDialog() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => SettingsScreen()),
-    ).then((_) => setState(() {}));
+    Navigator.push(context, MaterialPageRoute(builder: (_) => SettingsScreen()))
+        .then((_) => setState(() {}));
   }
 }
