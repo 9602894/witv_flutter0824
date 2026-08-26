@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
-// 移除 media_kit 导入
 import 'screens/home_screen.dart';
 import 'services/settings_service.dart';
 import 'services/log_service.dart';
@@ -10,7 +9,7 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await LogService.init();
 
-  // 确保焦点系统正确初始化（TV/遥控器支持）
+  // TV/机顶盒焦点策略：始终显示焦点高亮
   FocusManager.instance.highlightStrategy = FocusHighlightStrategy.alwaysTouch;
 
   // 强制横屏
@@ -29,10 +28,12 @@ void main() async {
     return true;
   };
 
-  runApp(MyApp());
+  runApp(const MyApp());
 }
 
 class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
   @override
   Widget build(BuildContext context) {
     return ChangeNotifierProvider(
@@ -40,7 +41,7 @@ class MyApp extends StatelessWidget {
       child: MaterialApp(
         title: 'Witv',
         theme: ThemeData.dark(),
-        home: HomeScreen(),
+        home: const HomeScreen(),
         debugShowCheckedModeBanner: false,
       ),
     );
