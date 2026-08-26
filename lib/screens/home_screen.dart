@@ -85,6 +85,10 @@ class _HomeScreenState extends State<HomeScreen> {
   int _exitMenuSelectedIndex = 0;
   String _focusArea = 'none'; // 'none', 'channelList', 'exitMenu', 'rightMenu'
   int _rightMenuSelectedIndex = 0;
+  
+  // TV 全局按键防抖（防止 RawKeyboardListener 和全局监听重复触发）
+  DateTime? _lastKeyTime;
+  String? _lastKeyLabel;
 
   DateTime get _beijingNow => EpgParser.beijingNow;
   String _formatTime(DateTime time) => EpgParser.formatBeijingTime(time);
@@ -97,6 +101,9 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _initAsync();
+
+    // TV/遥控器全局按键监听（不依赖 Flutter 焦点系统）
+    RawKeyboard.instance.addListener(_handleGlobalKeyEvent);
 
     _epgListener = () {
       if (!mounted) return;
@@ -241,6 +248,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _epgInfoTimer?.cancel();
     _retryTimer?.cancel();
     _digitTimer?.cancel();
+    RawKeyboard.instance.removeListener(_handleGlobalKeyEvent);
     _focusNode.dispose();
     _saveLayoutConfig();
     super.dispose();
@@ -503,6 +511,24 @@ class _HomeScreenState extends State<HomeScreen> {
 
     // 频道列表加载完成后，尝试下载台标（来源可能已配置）
     _tryDownloadLogos();
+  }
+
+  /// TV/遥控器全局按键处理（不依赖焦点系统）
+  void _handleGlobalKeyEvent(RawKeyEvent event) {
+    if (event is! RawKeyDownEvent) return;
+
+    // 防抖：同一按键 80ms 内只处理一次（防止 RawKeyboardListener 和全局监听重复）
+    final now = DateTime.now();
+    final keyLabel = event.logicalKey.keyLabel;
+    if (_lastKeyTime != null &&
+        now.difference(_lastKeyTime!).inMilliseconds < 80 &&
+        _lastKeyLabel == keyLabel) {
+      return;
+    }
+    _lastKeyTime = now;
+    _lastKeyLabel = keyLabel;
+
+    _handleKeyEvent(event);
   }
 
   void _handleKeyEvent(RawKeyEvent event) {
