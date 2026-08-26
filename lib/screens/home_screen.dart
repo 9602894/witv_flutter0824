@@ -78,12 +78,12 @@ class _HomeScreenState extends State<HomeScreen> {
   String _digitBuffer = '';
   Timer? _digitTimer;
 
-  // === 新增：退出对话框和数字键 ===
+  // ========== 新增字段：退出菜单 & 数字键 ==========
   bool _showExitDialog = false;
   int _exitDialogSelectedIndex = 0;
   String _channelNumberInput = '';
   Timer? _channelNumberTimer;
-  // ==============================
+  // ================================================
 
   VoidCallback? _epgListener;
   bool _autoLoaded = false;
@@ -99,12 +99,6 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _initAsync();
-
-    // 新增：请求焦点，确保遥控器事件送到 Flutter
-    // 如果这行导致黑屏，请注释掉下面三行
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _focusNode.requestFocus();
-    });
 
     _epgListener = () {
       if (!mounted) return;
@@ -245,7 +239,6 @@ class _HomeScreenState extends State<HomeScreen> {
     _retryTimer?.cancel();
     _digitTimer?.cancel();
     _channelNumberTimer?.cancel();
-    _focusNode.dispose();
     _saveLayoutConfig();
     super.dispose();
   }
@@ -510,7 +503,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _tryDownloadLogos();
   }
 
-  // === 修改：扩展遥控器支持 ===
+  // ========== 修改：扩展遥控器支持 ==========
   void _handleKeyEvent(RawKeyEvent event) {
     if (event is! RawKeyDownEvent) return;
     final key = event.logicalKey;
@@ -527,7 +520,7 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    // 返回键弹出退出对话框（不用 WillPopScope，避免 PlatformView 黑屏）
+    // 返回键弹出退出对话框
     if (key == LogicalKeyboardKey.goBack || key == LogicalKeyboardKey.escape) {
       setState(() => _showExitDialog = true);
       return;
@@ -626,9 +619,9 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
   }
-  // ============================
+  // =========================================
 
-  // === 新增：数字键跳台 ===
+  // ========== 新增：数字键跳台 ==========
   void _jumpToChannelNumber(String digits) {
     if (digits.isEmpty) return;
     final targetNumber = int.tryParse(digits);
@@ -666,9 +659,9 @@ class _HomeScreenState extends State<HomeScreen> {
       _switchChannel(found);
     }
   }
-  // ========================
+  // =====================================
 
-  // === 新增：退出对话框按键处理 ===
+  // ========== 新增：退出对话框按键处理 ==========
   void _handleExitDialogKey(RawKeyEvent event) {
     if (event is! RawKeyDownEvent) return;
     final key = event.logicalKey;
@@ -709,7 +702,7 @@ class _HomeScreenState extends State<HomeScreen> {
         break;
     }
   }
-  // ==============================
+  // =============================================
 
   Widget _buildTag(String text) {
     return Container(
@@ -898,7 +891,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // === 新增：退出对话框 ===
+  // ========== 新增：退出对话框 ==========
   Widget _buildExitDialog() {
     if (!_showExitDialog) return const SizedBox.shrink();
 
@@ -1067,7 +1060,7 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
   }
-  // ==============================
+  // ======================================
 
   @override
   Widget build(BuildContext context) {
@@ -1082,14 +1075,14 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
 
-    // 母版原样：RawKeyboardListener 包裹 Scaffold，不用 WillPopScope
+    // 母版原样：RawKeyboardListener 包裹 Scaffold
     return RawKeyboardListener(
       focusNode: _focusNode,
       onKey: _handleKeyEvent,
       child: Scaffold(
         body: Stack(
           children: [
-            // === 母版原样：播放器 ===
+            // 1. 母版原样：播放器
             if (currentChannel != null && currentChannel!.url.isNotEmpty)
               Positioned.fill(
                 child: IjkPlayerWidget(
@@ -1103,7 +1096,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
 
-            // === 母版原样：点击显示EPG ===
+            // 2. 母版原样：点击显示EPG
             if (!_showEpgInfo)
               Positioned.fill(
                 child: GestureDetector(
@@ -1114,7 +1107,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
 
-            // === 母版原样：左侧滑出栏 ===
+            // 3. 母版原样：左侧滑出栏
             Positioned(
               left: 0, top: 0, bottom: 0, width: 40,
               child: GestureDetector(
@@ -1138,7 +1131,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
 
-            // === 母版原样：频道列表 ===
+            // 4. 母版原样：频道列表
             if (showChannelList && !isScheduleMode)
               Positioned(
                 left: 0, top: 0, bottom: 0,
@@ -1227,7 +1220,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
 
-            // === 母版原样：节目单 ===
+            // 5. 母版原样：节目单
             if (isScheduleMode)
               Positioned(
                 left: 0, top: 0, bottom: 0,
@@ -1328,7 +1321,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
 
-            // === 母版原样：EPG信息栏 ===
+            // 6. 母版原样：EPG信息栏
             Positioned(
               left: 0,
               right: 0,
@@ -1336,34 +1329,7 @@ class _HomeScreenState extends State<HomeScreen> {
               child: _buildEpgInfoBar(),
             ),
 
-            // === 新增：数字键输入显示 ===
-            if (_channelNumberInput.isNotEmpty)
-              Positioned(
-                top: MediaQuery.of(context).size.height * 0.25,
-                left: 0,
-                right: 0,
-                child: Center(
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
-                    decoration: BoxDecoration(
-                      color: Colors.black.withOpacity(0.75),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: Colors.white.withOpacity(0.2)),
-                    ),
-                    child: Text(
-                      _channelNumberInput,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 56,
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: 4,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-
-            // === 母版原样：右侧菜单 ===
+            // 7. 母版原样：右侧菜单
             if (_showRightMenu)
               Positioned(
                 top: 0, right: 0, bottom: 0,
@@ -1402,7 +1368,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
 
-            // === 母版原样：右上角按钮 ===
+            // 8. 母版原样：右上角按钮
             Positioned(
               top: 0, right: 0,
               child: Row(
@@ -1431,7 +1397,34 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
 
-            // === 新增：退出对话框（放在 Stack 最上层） ===
+            // 9. 新增：数字键输入显示
+            if (_channelNumberInput.isNotEmpty)
+              Positioned(
+                top: MediaQuery.of(context).size.height * 0.25,
+                left: 0,
+                right: 0,
+                child: Center(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withOpacity(0.75),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.white.withOpacity(0.2)),
+                    ),
+                    child: Text(
+                      _channelNumberInput,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 56,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 4,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+
+            // 10. 新增：退出对话框（Stack最上层）
             _buildExitDialog(),
           ],
         ),
