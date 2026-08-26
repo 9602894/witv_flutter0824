@@ -15,16 +15,10 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   int _selectedIndex = 0;
   final FocusNode _focusNode = FocusNode();
-  final TextEditingController _nameController = TextEditingController();
-  final TextEditingController _urlController = TextEditingController();
-  final TextEditingController _epgUrlController = TextEditingController();
-  String _currentEpgUrl = '';
 
   @override
   void initState() {
     super.initState();
-    _loadToken();
-    _loadCurrentEpgUrl();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _focusNode.requestFocus();
     });
@@ -33,9 +27,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void dispose() {
     _focusNode.dispose();
-    _nameController.dispose();
-    _urlController.dispose();
-    _epgUrlController.dispose();
     super.dispose();
   }
 
@@ -60,16 +51,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } else if (isBack) {
       Navigator.of(context).pop();
     }
-  }
-
-  Future<void> _loadToken() async {
-    final token = await SettingsService.getToken();
-    if (mounted) setState(() {});
-  }
-
-  Future<void> _loadCurrentEpgUrl() async {
-    final url = await SettingsService.getCurrentEpgUrl();
-    if (mounted) setState(() => _currentEpgUrl = url);
   }
 
   @override
@@ -97,27 +78,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ),
             _buildSettingItem(
-              '播放速度',
-              subtitle: '${settings.playSpeed}x',
-              trailing: DropdownButton<double>(
-                value: settings.playSpeed,
-                dropdownColor: Colors.grey[800],
-                items: const [
-                  DropdownMenuItem(value: 0.5, child: Text('0.5x')),
-                  DropdownMenuItem(value: 1.0, child: Text('1.0x')),
-                  DropdownMenuItem(value: 1.25, child: Text('1.25x')),
-                  DropdownMenuItem(value: 1.5, child: Text('1.5x')),
-                  DropdownMenuItem(value: 2.0, child: Text('2.0x')),
-                ],
-                onChanged: (v) => settings.setPlaySpeed(v ?? 1.0),
-              ),
-            ),
-            _buildSettingItem(
-              '自动播放',
-              subtitle: settings.autoPlay ? '开启' : '关闭',
+              '断线重连',
+              subtitle: settings.autoReconnect ? '开启' : '关闭',
               trailing: Switch(
-                value: settings.autoPlay,
-                onChanged: (v) => settings.setAutoPlay(v),
+                value: settings.autoReconnect,
+                onChanged: (v) => settings.setAutoReconnect(v),
               ),
             ),
             const Divider(),
@@ -125,7 +90,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
             _buildSettingItem(
               '清除缓存',
               onTap: () async {
-                await SettingsService.clearCache();
+                final dir = await SettingsService.getCacheDir();
+                if (await dir.exists()) {
+                  await dir.delete(recursive: true);
+                }
                 if (mounted) ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(content: Text('缓存已清除')),
                 );
@@ -134,9 +102,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             _buildSettingItem(
               '导出日志',
               onTap: () async {
-                final path = await LogService.exportLogs();
+                final file = await LogService.export();
                 if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('日志已导出: $path')),
+                  SnackBar(content: Text(file != null ? '日志已导出' : '导出失败')),
                 );
               },
             ),
