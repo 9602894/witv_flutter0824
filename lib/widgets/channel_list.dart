@@ -12,14 +12,7 @@ class ChannelLogo extends StatefulWidget {
   final BoxFit fit;
   final Color? backgroundColor;
 
-  const ChannelLogo({
-    Key? key,
-    required this.channelName,
-    this.width = 32,
-    this.height = 32,
-    this.fit = BoxFit.contain,
-    this.backgroundColor,
-  }) : super(key: key);
+  const ChannelLogo({Key? key, required this.channelName, this.width = 32, this.height = 32, this.fit = BoxFit.contain, this.backgroundColor}) : super(key: key);
 
   @override
   State<ChannelLogo> createState() => _ChannelLogoState();
@@ -48,15 +41,12 @@ class _ChannelLogoState extends State<ChannelLogo> {
 
   @override
   void dispose() {
-    if (_logoListener != null) {
-      LogoService().logoUpdateNotifier.removeListener(_logoListener!);
-    }
+    if (_logoListener != null) LogoService().logoUpdateNotifier.removeListener(_logoListener!);
     super.dispose();
   }
 
   Future<void> _load() async {
-    final service = LogoService();
-    final file = await service.getLogo(widget.channelName);
+    final file = await LogoService().getLogo(widget.channelName);
     if (mounted && file != null && file.existsSync()) {
       final bytes = await file.readAsBytes();
       setState(() => _logoBytes = bytes);
@@ -67,23 +57,11 @@ class _ChannelLogoState extends State<ChannelLogo> {
   Widget build(BuildContext context) {
     if (_logoBytes != null && _logoBytes!.isNotEmpty) {
       return Container(
-        width: widget.width,
-        height: widget.height,
+        width: widget.width, height: widget.height,
         color: widget.backgroundColor ?? Colors.transparent,
-        child: Image.memory(
-          _logoBytes!,
-          width: widget.width,
-          height: widget.height,
-          fit: widget.fit,
-          gaplessPlayback: true,
-          errorBuilder: (_, __, ___) => _buildPlaceholder(),
-        ),
+        child: Image.memory(_logoBytes!, width: widget.width, height: widget.height, fit: widget.fit, gaplessPlayback: true, errorBuilder: (_, __, ___) => SizedBox(width: widget.width, height: widget.height)),
       );
     }
-    return _buildPlaceholder();
-  }
-
-  Widget _buildPlaceholder() {
     return SizedBox(width: widget.width, height: widget.height);
   }
 }
@@ -96,15 +74,7 @@ class ChannelList extends StatelessWidget {
   final bool showChannelNumber;
   final bool showLogo;
 
-  const ChannelList({
-    Key? key,
-    required this.channels,
-    required this.selectedChannel,
-    required this.onSelect,
-    required this.epgMap,
-    this.showChannelNumber = true,
-    this.showLogo = true,
-  }) : super(key: key);
+  const ChannelList({Key? key, required this.channels, required this.selectedChannel, required this.onSelect, required this.epgMap, this.showChannelNumber = true, this.showLogo = true}) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
@@ -120,47 +90,15 @@ class ChannelList extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
             decoration: BoxDecoration(
               color: isSelected ? Colors.white.withOpacity(0.1) : Colors.transparent,
-              border: Border(
-                left: BorderSide(
-                  color: isSelected ? Colors.yellow : Colors.transparent,
-                  width: 3,
-                ),
-              ),
+              border: Border(left: BorderSide(color: isSelected ? Colors.yellow : Colors.transparent, width: 3)),
             ),
             child: Row(
               children: [
                 if (showChannelNumber && channel.number != null)
-                  Container(
-                    width: 40,
-                    alignment: Alignment.center,
-                    child: Text(
-                      '${channel.number}',
-                      style: TextStyle(
-                        color: isSelected ? Colors.yellow : Colors.white70,
-                        fontSize: 13,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-                if (showLogo)
-                  ChannelLogo(
-                    channelName: channel.name,
-                    width: 32,
-                    height: 32,
-                  ),
+                  Container(width: 40, alignment: Alignment.center, child: Text('${channel.number}', style: TextStyle(color: isSelected ? Colors.yellow : Colors.white70, fontSize: 13, fontWeight: FontWeight.bold))),
+                if (showLogo) ChannelLogo(channelName: channel.name, width: 32, height: 32),
                 const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    showChannelNumber && channel.number != null
-                        ? '${channel.number}. ${channel.name}'
-                        : channel.name,
-                    style: TextStyle(
-                      color: isSelected ? Colors.yellow : Colors.white,
-                      fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                      fontSize: 14,
-                    ),
-                  ),
-                ),
+                Expanded(child: Text(showChannelNumber && channel.number != null ? '${channel.number}. ${channel.name}' : channel.name, style: TextStyle(color: isSelected ? Colors.yellow : Colors.white, fontWeight: isSelected ? FontWeight.bold : FontWeight.normal, fontSize: 14))),
               ],
             ),
           ),
