@@ -1,91 +1,32 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:ijkplayer_flutter_sdk/ijkplayer_flutter_sdk.dart';
+import 'ijk_player_widget.dart';
 
-class IjkPlayerWidget extends StatefulWidget {
+class PlayerWidget extends StatefulWidget {
   final String url;
+  final int decoderIndex;
   final VoidCallback? onError;
-  final Function(double speed)? onSpeedUpdate;
+  final ValueChanged<double>? onSpeedUpdate;
 
-  const IjkPlayerWidget({
+  const PlayerWidget({
     Key? key,
     required this.url,
+    this.decoderIndex = 0,
     this.onError,
     this.onSpeedUpdate,
   }) : super(key: key);
 
   @override
-  _IjkPlayerWidgetState createState() => _IjkPlayerWidgetState();
+  State<PlayerWidget> createState() => _PlayerWidgetState();
 }
 
-class _IjkPlayerWidgetState extends State<IjkPlayerWidget> {
-  late FlutterIjkPlayer _player;
-  bool _isLoading = true;
-  bool _hasError = false;
-  Timer? _speedTimer;
-
-  @override
-  void initState() {
-    super.initState();
-    try {
-      _player = FlutterIjkPlayer();
-      // 硬件解码
-      _player.setOption(1, "mediacodec", 1);
-      _player.setOption(1, "mediacodec-auto-rotate", 1);
-      _player.setOption(1, "mediacodec-handle-resolution-change", 1);
-      _player.setOption(1, "videotoolbox", 1);
-      _player.setDataSource(widget.url, autoPlay: true);
-
-      // 状态监听
-      _player.addListener(() {
-        final state = _player.value.state;
-        if (state == 2 && !_hasError) {
-          setState(() => _isLoading = false);
-        } else if (state == 6) {
-          setState(() {
-            _isLoading = false;
-            _hasError = true;
-          });
-          widget.onError?.call();
-        }
-      });
-
-      // 模拟速度更新（每秒一次）
-      _speedTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-        if (!mounted) {
-          timer.cancel();
-          return;
-        }
-        // 模拟网速（实际可通过 IJKPlayer 的日志或 bitrate 估算）
-        final speed = 0.5 + (DateTime.now().millisecond % 10) / 2.0;
-        widget.onSpeedUpdate?.call(speed);
-      });
-    } catch (e) {
-      setState(() {
-        _isLoading = false;
-        _hasError = true;
-      });
-      widget.onError?.call();
-    }
-  }
-
-  @override
-  void dispose() {
-    _speedTimer?.cancel();
-    _player.release();
-    super.dispose();
-  }
-
+class _PlayerWidgetState extends State<PlayerWidget> {
   @override
   Widget build(BuildContext context) {
-    if (_hasError) {
-      return const Center(
-        child: Text('播放器初始化失败', style: TextStyle(color: Colors.white)),
-      );
-    }
-    if (_isLoading) {
-      return const Center(child: CircularProgressIndicator(color: Colors.white));
-    }
-    return FlutterIjkView(player: _player, color: Colors.black);
+    return IjkPlayerWidget(
+      url: widget.url,
+      decoderIndex: widget.decoderIndex,
+      onError: widget.onError,
+      onSpeedUpdate: widget.onSpeedUpdate,
+    );
   }
 }
