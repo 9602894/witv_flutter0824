@@ -24,7 +24,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _isLoadingToken = true;
   bool _isSavingEpg = false;
 
-  // FocusNode for TV remote navigation - using onKeyEvent for Flutter 3.19+
+  // 新增：遥控器全局焦点与选中索引
+  int _selectedIndex = 0;
+  final FocusNode _focusNode = FocusNode();
+
+  // 原有 FocusNode 保持不变
   late final FocusNode _nameFocus;
   late final FocusNode _urlFocus;
   late final FocusNode _addBtnFocus;
@@ -58,9 +62,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _autoReconnectFocus = _createBtnFocus();
     _exportLogFocus = _createBtnFocus();
     _clearLogFocus = _createBtnFocus();
+
+    // 延迟请求焦点
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _focusNode.requestFocus();
+    });
   }
 
-  /// Create FocusNode for TextField with TV remote support (Flutter 3.19+ onKeyEvent)
   FocusNode _createFieldFocus(TextEditingController controller) {
     return FocusNode(
       onKeyEvent: (node, event) {
@@ -90,7 +98,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  /// Create FocusNode for Button with TV remote support
   FocusNode _createBtnFocus() {
     return FocusNode(
       onKeyEvent: (node, event) {
@@ -127,6 +134,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   void dispose() {
+    _focusNode.dispose();
     _nameController.dispose();
     _urlController.dispose();
     _tokenController.dispose();
@@ -155,7 +163,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final url = _epgUrlController.text.trim();
     if (url.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('请输入有效的 EPG URL')),
+        const SnackBar(content: Text('请输入有效的 EPG URL')),
       );
       return;
     }
@@ -163,7 +171,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     try {
       await EpgParser.saveEpgUrl(url);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('EPG URL 已保存')),
+        const SnackBar(content: Text('EPG URL 已保存')),
       );
       _epgUrlController.clear();
     } catch (e) {
@@ -175,352 +183,384 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  // 新增：全局按键处理
+  void _handleKeyEvent(RawKeyEvent event) {
+    if (event is! RawKeyDownEvent) return;
+    final key = event.logicalKey;
+    final keyId = key.keyId;
+    final label = key.keyLabel.toLowerCase();
+
+    final isUp = key == LogicalKeyboardKey.arrowUp || key == LogicalKeyboardKey.numpad8 ||
+                 keyId == 0x100000304 || keyId == 0x01000026 || label.contains('up');
+    final isDown = key == LogicalKeyboardKey.arrowDown || key == LogicalKeyboardKey.numpad2 ||
+                   keyId == 0x100000301 || keyId == 0x01000028 || label.contains('down');
+    final isBack = key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack ||
+                   key == LogicalKeyboardKey.backspace || keyId == 0x100000803 ||
+                   keyId == 0x100000008 || label.contains('back');
+
+    if (isUp) {
+      setState(() => _selectedIndex = _selectedIndex > 0 ? _selectedIndex - 1 : 0);
+    } else if (isDown) {
+      setState(() => _selectedIndex = _selectedIndex + 1);
+    } else if (isBack) {
+      Navigator.of(context).pop();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final settings = Provider.of<SettingsService>(context);
-    return FocusTraversalGroup(
-      policy: WidgetOrderTraversalPolicy(),
-      child: Scaffold(
-        appBar: AppBar(
-          title: Text('设置'),
-          actions: [
-            IconButton(
-              icon: Icon(Icons.refresh),
-              onPressed: () {
-                settings.markNeedsRefresh();
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('已标记刷新，返回后自动更新')),
-                );
-              },
-            ),
-          ],
-        ),
-        body: ListView(
-          children: [
-            Card(
-              margin: EdgeInsets.all(8),
-              child: Padding(
-                padding: EdgeInsets.all(12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('订阅源管理', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                    SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: _nameController,
-                            focusNode: _nameFocus,
-                            textInputAction: TextInputAction.next,
-                            decoration: InputDecoration(
-                              labelText: '名称',
-                              border: OutlineInputBorder(),
-                              isDense: true,
+    return RawKeyboardListener(
+      focusNode: _focusNode,
+      onKey: _handleKeyEvent,
+      child: FocusTraversalGroup(
+        policy: WidgetOrderTraversalPolicy(),
+        child: Scaffold(
+          appBar: AppBar(
+            title: const Text('设置'),
+            actions: [
+              IconButton(
+                icon: const Icon(Icons.refresh),
+                onPressed: () {
+                  settings.markNeedsRefresh();
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('已标记刷新，返回后自动更新')),
+                  );
+                },
+              ),
+            ],
+          ),
+          body: ListView(
+            children: [
+              Card(
+                margin: const EdgeInsets.all(8),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('订阅源管理', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: _nameController,
+                              focusNode: _nameFocus,
+                              textInputAction: TextInputAction.next,
+                              decoration: const InputDecoration(
+                                labelText: '名称',
+                                border: OutlineInputBorder(),
+                                isDense: true,
+                              ),
                             ),
                           ),
-                        ),
-                        SizedBox(width: 8),
-                        Expanded(
-                          child: TextField(
-                            controller: _urlController,
-                            focusNode: _urlFocus,
-                            textInputAction: TextInputAction.next,
-                            decoration: InputDecoration(
-                              labelText: 'URL',
-                              border: OutlineInputBorder(),
-                              isDense: true,
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: TextField(
+                              controller: _urlController,
+                              focusNode: _urlFocus,
+                              textInputAction: TextInputAction.next,
+                              decoration: const InputDecoration(
+                                labelText: 'URL',
+                                border: OutlineInputBorder(),
+                                isDense: true,
+                              ),
                             ),
                           ),
-                        ),
-                        SizedBox(width: 8),
-                        Focus(
-                          focusNode: _addBtnFocus,
-                          child: ElevatedButton(
-                            onPressed: _isAdding ? null : _addSubscription,
-                            child: _isAdding ? SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)) : Text('添加'),
-                          ),
-                        ),
-                      ],
-                    ),
-                    SizedBox(height: 12),
-                    ...settings.subscriptions.map((sub) => ListTile(
-                      leading: Checkbox(
-                        value: sub.selected,
-                        onChanged: (_) {
-                          settings.toggleSelected(sub);
-                        },
-                      ),
-                      title: Text(sub.name),
-                      subtitle: Text(sub.url, maxLines: 1, overflow: TextOverflow.ellipsis),
-                      trailing: IconButton(
-                        icon: Icon(Icons.delete, color: Colors.red),
-                        onPressed: () {
-                          _confirmDelete(sub);
-                        },
-                      ),
-                    )).toList(),
-                    if (settings.subscriptions.isEmpty)
-                      Padding(
-                        padding: EdgeInsets.symmetric(vertical: 16),
-                        child: Center(child: Text('暂无订阅源，请添加')),
-                      ),
-                  ],
-                ),
-              ),
-            ),
-
-            Card(
-              margin: EdgeInsets.all(8),
-              child: Padding(
-                padding: EdgeInsets.all(12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('EPG 订阅管理', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                    SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: _epgUrlController,
-                            focusNode: _epgUrlFocus,
-                            textInputAction: TextInputAction.next,
-                            decoration: InputDecoration(
-                              labelText: 'EPG URL',
-                              hintText: '输入 EPG XML 地址',
-                              border: OutlineInputBorder(),
-                              isDense: true,
+                          const SizedBox(width: 8),
+                          Focus(
+                            focusNode: _addBtnFocus,
+                            child: ElevatedButton(
+                              onPressed: _isAdding ? null : _addSubscription,
+                              child: _isAdding
+                                  ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                                  : const Text('添加'),
                             ),
                           ),
-                        ),
-                        SizedBox(width: 8),
-                        Focus(
-                          focusNode: _epgSaveBtnFocus,
-                          child: ElevatedButton(
-                            onPressed: _isSavingEpg ? null : _saveEpgUrl,
-                            child: _isSavingEpg
-                                ? SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
-                                : Text('保存'),
-                          ),
-                        ),
-                      ],
-                    ),
-                    SizedBox(height: 8),
-                    FutureBuilder<String?>(
-                      future: _getCurrentEpgUrl(),
-                      builder: (context, snapshot) {
-                        final url = snapshot.data;
-                        if (url != null && url.isNotEmpty) {
-                          return Text('当前: $url', style: TextStyle(fontSize: 12, color: Colors.grey), maxLines: 1, overflow: TextOverflow.ellipsis);
-                        }
-                        return SizedBox.shrink();
-                      },
-                    ),
-                  ],
-                ),
-              ),
-            ),
-
-            Card(
-              margin: EdgeInsets.all(8),
-              child: Padding(
-                padding: EdgeInsets.all(12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('GitHub 私有仓库令牌', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                    SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: _tokenController,
-                            focusNode: _tokenFocus,
-                            textInputAction: TextInputAction.next,
-                            obscureText: true,
-                            decoration: InputDecoration(
-                              labelText: 'Personal Access Token',
-                              hintText: '输入您的 GitHub 令牌',
-                              border: OutlineInputBorder(),
-                              isDense: true,
-                            ),
-                          ),
-                        ),
-                        SizedBox(width: 8),
-                        Focus(
-                          focusNode: _tokenSaveBtnFocus,
-                          child: ElevatedButton(
-                            onPressed: _isLoadingToken ? null : _saveToken,
-                            child: _isLoadingToken ? SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)) : Text('保存'),
-                          ),
-                        ),
-                      ],
-                    ),
-                    SizedBox(height: 4),
-                    Text('令牌仅保存在本地，用于访问私有仓库的配置、EPG 和台标资源。',
-                      style: TextStyle(fontSize: 12, color: Colors.grey)),
-                  ],
-                ),
-              ),
-            ),
-
-            Card(
-              margin: EdgeInsets.all(8),
-              child: Padding(
-                padding: EdgeInsets.all(12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('台标来源', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                    SizedBox(height: 8),
-                    Focus(
-                      focusNode: _logoSourceFocus,
-                      child: ListTile(
-                        leading: Icon(Icons.image),
-                        title: Text('选择台标来源'),
-                        subtitle: Text('M3U订阅源 / GitHub仓库 / EPG文件'),
-                        trailing: Icon(Icons.chevron_right),
-                        onTap: () => LogoSourceSettingDialog.show(context),
-                      ),
-                    ),
-                    Focus(
-                      focusNode: _clearLogoFocus,
-                      child: ListTile(
-                        leading: Icon(Icons.delete_forever, color: Colors.red),
-                        title: Text('清除台标缓存', style: TextStyle(color: Colors.red)),
-                        subtitle: Text('删除 logo 文件夹中的所有台标'),
-                        onTap: () => _confirmClearLogoCache(),
-                      ),
-                    ),
-                    SizedBox(height: 4),
-                    Text('GitHub 来源直接保存；M3U / EPG 来源自动去除白底后保存。',
-                      style: TextStyle(fontSize: 12, color: Colors.grey)),
-                  ],
-                ),
-              ),
-            ),
-
-            Card(
-              margin: EdgeInsets.all(8),
-              child: Padding(
-                padding: EdgeInsets.all(12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('解码器', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                    SizedBox(height: 8),
-                    Focus(
-                      focusNode: _decoderFocus,
-                      child: DropdownButton<int>(
-                        value: settings.decoderIndex,
-                        items: [
-                          DropdownMenuItem(value: 0, child: Text('硬件解码 (画质优先，推荐)')),
-                          DropdownMenuItem(value: 1, child: Text('软件解码 (兼容优先)')),
                         ],
-                        onChanged: (value) {
-                          if (value != null) settings.setDecoderIndex(value);
-                        },
-                        isExpanded: true,
                       ),
-                    ),
-                    SizedBox(height: 8),
-                    Text(
-                      '当前解码器: ${settings.decoderIndex == 0 ? "硬件（画质更好）" : "软件（兼容性更好）"}',
-                    ),
-                    SizedBox(height: 4),
-                    Text(
-                      '• 硬解：使用 GPU 解码，画质清晰、CPU 占用低，部分老旧设备可能黑屏。\n'
-                      '• 软解：使用 CPU 解码，兼容性最好，但高码率直播可能卡顿。\n'
-                      '如果画面模糊/有马赛克，尝试切换解码器。',
-                      style: TextStyle(fontSize: 12, color: Colors.grey),
-                    ),
-                  ],
+                      const SizedBox(height: 12),
+                      ...settings.subscriptions.map((sub) => ListTile(
+                        leading: Checkbox(
+                          value: sub.selected,
+                          onChanged: (_) {
+                            settings.toggleSelected(sub);
+                          },
+                        ),
+                        title: Text(sub.name),
+                        subtitle: Text(sub.url, maxLines: 1, overflow: TextOverflow.ellipsis),
+                        trailing: IconButton(
+                          icon: const Icon(Icons.delete, color: Colors.red),
+                          onPressed: () {
+                            _confirmDelete(sub);
+                          },
+                        ),
+                      )).toList(),
+                      if (settings.subscriptions.isEmpty)
+                        const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 16),
+                          child: Center(child: Text('暂无订阅源，请添加')),
+                        ),
+                    ],
+                  ),
                 ),
               ),
-            ),
 
-            Card(
-              margin: EdgeInsets.all(8),
-              child: Padding(
-                padding: EdgeInsets.all(12),
-                child: Row(
-                  children: [
-                    Text('断线自动重连', style: TextStyle(fontSize: 18)),
-                    Spacer(),
-                    Focus(
-                      focusNode: _autoReconnectFocus,
-                      child: Switch(
-                        value: settings.autoReconnect,
-                        onChanged: (value) {
-                          settings.setAutoReconnect(value);
-                        },
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-
-            Card(
-              margin: EdgeInsets.all(8),
-              child: Padding(
-                padding: EdgeInsets.all(12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('日志', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                    SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Focus(
-                            focusNode: _exportLogFocus,
-                            child: ElevatedButton.icon(
-                              icon: Icon(Icons.file_download),
-                              label: Text('导出日志'),
-                              onPressed: _exportLog,
+              Card(
+                margin: const EdgeInsets.all(8),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('EPG 订阅管理', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: _epgUrlController,
+                              focusNode: _epgUrlFocus,
+                              textInputAction: TextInputAction.next,
+                              decoration: const InputDecoration(
+                                labelText: 'EPG URL',
+                                hintText: '输入 EPG XML 地址',
+                                border: OutlineInputBorder(),
+                                isDense: true,
+                              ),
                             ),
                           ),
-                        ),
-                        SizedBox(width: 8),
-                        Expanded(
-                          child: Focus(
-                            focusNode: _clearLogFocus,
-                            child: ElevatedButton.icon(
-                              icon: Icon(Icons.delete_forever),
-                              label: Text('清空日志'),
-                              onPressed: _clearLogs,
-                              style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+                          const SizedBox(width: 8),
+                          Focus(
+                            focusNode: _epgSaveBtnFocus,
+                            child: ElevatedButton(
+                              onPressed: _isSavingEpg ? null : _saveEpgUrl,
+                              child: _isSavingEpg
+                                  ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                                  : const Text('保存'),
                             ),
                           ),
-                        ),
-                      ],
-                    ),
-                  ],
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      FutureBuilder<String?>(
+                        future: _getCurrentEpgUrl(),
+                        builder: (context, snapshot) {
+                          final url = snapshot.data;
+                          if (url != null && url.isNotEmpty) {
+                            return Text('当前: $url', style: const TextStyle(fontSize: 12, color: Colors.grey), maxLines: 1, overflow: TextOverflow.ellipsis);
+                          }
+                          return const SizedBox.shrink();
+                        },
+                      ),
+                    ],
+                  ),
                 ),
               ),
-            ),
 
-            Card(
-              margin: EdgeInsets.all(8),
-              child: Padding(
-                padding: EdgeInsets.all(12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('关于', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                    SizedBox(height: 8),
-                    ListTile(
-                      leading: Icon(Icons.info),
-                      title: Text('Witv 播放器'),
-                      subtitle: Text('版本 1.0.0\n基于 Flutter 构建'),
-                    ),
-                  ],
+              Card(
+                margin: const EdgeInsets.all(8),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('GitHub 私有仓库令牌', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: _tokenController,
+                              focusNode: _tokenFocus,
+                              textInputAction: TextInputAction.next,
+                              obscureText: true,
+                              decoration: const InputDecoration(
+                                labelText: 'Personal Access Token',
+                                hintText: '输入您的 GitHub 令牌',
+                                border: OutlineInputBorder(),
+                                isDense: true,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Focus(
+                            focusNode: _tokenSaveBtnFocus,
+                            child: ElevatedButton(
+                              onPressed: _isLoadingToken ? null : _saveToken,
+                              child: _isLoadingToken
+                                  ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                                  : const Text('保存'),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      const Text('令牌仅保存在本地，用于访问私有仓库的配置、EPG 和台标资源。',
+                        style: TextStyle(fontSize: 12, color: Colors.grey)),
+                    ],
+                  ),
                 ),
               ),
-            ),
-          ],
+
+              Card(
+                margin: const EdgeInsets.all(8),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('台标来源', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 8),
+                      Focus(
+                        focusNode: _logoSourceFocus,
+                        child: ListTile(
+                          leading: const Icon(Icons.image),
+                          title: const Text('选择台标来源'),
+                          subtitle: const Text('M3U订阅源 / GitHub仓库 / EPG文件'),
+                          trailing: const Icon(Icons.chevron_right),
+                          onTap: () => LogoSourceSettingDialog.show(context),
+                        ),
+                      ),
+                      Focus(
+                        focusNode: _clearLogoFocus,
+                        child: ListTile(
+                          leading: const Icon(Icons.delete_forever, color: Colors.red),
+                          title: const Text('清除台标缓存', style: TextStyle(color: Colors.red)),
+                          subtitle: const Text('删除 logo 文件夹中的所有台标'),
+                          onTap: () => _confirmClearLogoCache(),
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      const Text('GitHub 来源直接保存；M3U / EPG 来源自动去除白底后保存。',
+                        style: TextStyle(fontSize: 12, color: Colors.grey)),
+                    ],
+                  ),
+                ),
+              ),
+
+              Card(
+                margin: const EdgeInsets.all(8),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('解码器', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 8),
+                      Focus(
+                        focusNode: _decoderFocus,
+                        child: DropdownButton<int>(
+                          value: settings.decoderIndex,
+                          items: const [
+                            DropdownMenuItem(value: 0, child: Text('硬件解码 (画质优先，推荐)')),
+                            DropdownMenuItem(value: 1, child: Text('软件解码 (兼容优先)')),
+                          ],
+                          onChanged: (value) {
+                            if (value != null) settings.setDecoderIndex(value);
+                          },
+                          isExpanded: true,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        '当前解码器: ${settings.decoderIndex == 0 ? "硬件（画质更好）" : "软件（兼容性更好）"}',
+                      ),
+                      const SizedBox(height: 4),
+                      const Text(
+                        '• 硬解：使用 GPU 解码，画质清晰、CPU 占用低，部分老旧设备可能黑屏。\n'
+                        '• 软解：使用 CPU 解码，兼容性最好，但高码率直播可能卡顿。\n'
+                        '如果画面模糊/有马赛克，尝试切换解码器。',
+                        style: TextStyle(fontSize: 12, color: Colors.grey),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+
+              Card(
+                margin: const EdgeInsets.all(8),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Row(
+                    children: [
+                      const Text('断线自动重连', style: TextStyle(fontSize: 18)),
+                      const Spacer(),
+                      Focus(
+                        focusNode: _autoReconnectFocus,
+                        child: Switch(
+                          value: settings.autoReconnect,
+                          onChanged: (value) {
+                            settings.setAutoReconnect(value);
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+
+              Card(
+                margin: const EdgeInsets.all(8),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('日志', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Focus(
+                              focusNode: _exportLogFocus,
+                              child: ElevatedButton.icon(
+                                icon: const Icon(Icons.file_download),
+                                label: const Text('导出日志'),
+                                onPressed: _exportLog,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Focus(
+                              focusNode: _clearLogFocus,
+                              child: ElevatedButton.icon(
+                                icon: const Icon(Icons.delete_forever),
+                                label: const Text('清空日志'),
+                                onPressed: _clearLogs,
+                                style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+
+              Card(
+                margin: const EdgeInsets.all(8),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('关于', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 8),
+                      const ListTile(
+                        leading: Icon(Icons.info),
+                        title: Text('Witv 播放器'),
+                        subtitle: Text('版本 1.0.0\n基于 Flutter 构建'),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -531,7 +571,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final url = _urlController.text.trim();
     if (name.isEmpty || url.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('请填写完整信息')),
+        const SnackBar(content: Text('请填写完整信息')),
       );
       return;
     }
@@ -541,7 +581,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final exists = settings.subscriptions.any((s) => s.url == url || s.name == name);
       if (exists) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('订阅源已存在')),
+          const SnackBar(content: Text('订阅源已存在')),
         );
         return;
       }
@@ -581,7 +621,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final token = _tokenController.text.trim();
     if (token.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('请输入有效令牌')),
+        const SnackBar(content: Text('请输入有效令牌')),
       );
       return;
     }
@@ -589,7 +629,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     try {
       await ConfigService.saveGitHubToken(token);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('令牌已保存')),
+        const SnackBar(content: Text('令牌已保存')),
       );
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -613,7 +653,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         await LogoService().clearLogoCache();
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('台标缓存已清空')),
+            const SnackBar(content: Text('台标缓存已清空')),
           );
         }
       } catch (e) {
@@ -635,7 +675,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         );
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('暂无日志文件')),
+          const SnackBar(content: Text('暂无日志文件')),
         );
       }
     } catch (e) {
@@ -660,7 +700,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           await dir.delete(recursive: true);
           await dir.create(recursive: true);
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('日志已清空')),
+            const SnackBar(content: Text('日志已清空')),
           );
         }
       } catch (e) {
