@@ -1,91 +1,156 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:ijkplayer_flutter_sdk/ijkplayer_flutter_sdk.dart';
+import 'package:flutter/services.dart';
 
 class IjkPlayerWidget extends StatefulWidget {
   final String url;
+  final int decoderIndex;
   final VoidCallback? onError;
-  final Function(double speed)? onSpeedUpdate;
+  final ValueChanged<double>? onSpeedUpdate;
 
   const IjkPlayerWidget({
     Key? key,
     required this.url,
+    this.decoderIndex = 0,
     this.onError,
     this.onSpeedUpdate,
   }) : super(key: key);
 
   @override
-  _IjkPlayerWidgetState createState() => _IjkPlayerWidgetState();
+  State<IjkPlayerWidget> createState() => _IjkPlayerWidgetState();
 }
 
 class _IjkPlayerWidgetState extends State<IjkPlayerWidget> {
-  late FlutterIjkPlayer _player;
-  bool _isLoading = true;
-  bool _hasError = false;
-  Timer? _speedTimer;
+  static const MethodChannel _channel = MethodChannel('com.example.witv/ijkplayer');
+  int _viewId = -1;
 
   @override
   void initState() {
     super.initState();
-    try {
-      _player = FlutterIjkPlayer();
-      // 硬件解码 + 华为海思兼容修复
-      _player.setOption(1, "mediacodec", 1);
-      _player.setOption(1, "mediacodec-auto-rotate", 0);           // 关闭自动旋转
-      _player.setOption(1, "mediacodec-handle-resolution-change", 0); // 关闭分辨率变化处理
-      _player.setOption(1, "opensles", 0);                         // 使用AudioTrack而非OpenSL ES
-      _player.setOption(1, "videotoolbox", 1);
-      _player.setDataSource(widget.url, autoPlay: true);
+    _createPlayer();
+  }
 
-      // 状态监听
-      _player.addListener(() {
-        final state = _player.value.state;
-        if (state == 2 && !_hasError) {
-          setState(() => _isLoading = false);
-        } else if (state == 6) {
-          setState(() {
-            _isLoading = false;
-            _hasError = true;
-          });
-          widget.onError?.call();
-        }
-      });
-
-      // 模拟速度更新（每秒一次）
-      _speedTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-        if (!mounted) {
-          timer.cancel();
-          return;
-        }
-        final speed = 0.5 + (DateTime.now().millisecond % 10) / 2.0;
-        widget.onSpeedUpdate?.call(speed);
-      });
-    } catch (e) {
-      setState(() {
-        _isLoading = false;
-        _hasError = true;
-      });
-      widget.onError?.call();
+  @override
+  void didUpdateWidget(IjkPlayerWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.url != widget.url) {
+      _setDataSource(widget.url);
+    }
+    if (oldWidget.decoderIndex != widget.decoderIndex) {
+      _setDecoder(widget.decoderIndex);
     }
   }
 
   @override
   void dispose() {
-    _speedTimer?.cancel();
-    _player.release();
+    _releasePlayer();
     super.dispose();
+  }
+
+  Future<void> _createPlayer() async {
+    try {
+      final result = await _channel.invokeMethod<Map<dynamic, dynamic>>('createPlayer');
+      if (result != null) {
+        _viewId = result['viewId'] as int;
+        // 华为悦盒6110M花屏修复：关闭mediacodec-auto-rotate和mediacodec-handle-resolution-change
+        await _channel.invokeMethod('setOption', {
+          'viewId': _viewId,
+          'category': 1,
+          'name': 'mediacodec',
+          'value': widget.decoderIndex == 0 ? 1 : 0,
+        });
+        await _channel.invokeMethod('setOption', {
+          'viewId': _viewId,
+          'category': 1,
+          'name': 'mediacodec-auto-rotate',
+          'value': 0,  // 华为海思兼容：关闭自动旋转
+        });
+        await _channel.invokeMethod('setOption', {
+          'viewId': _viewId,
+          'category': 1,
+          'name': 'mediacodec-handle-resolution-change',
+          'value': 0,  // 华为海思兼容：关闭分辨率变化处理
+        });
+        await _channel.invokeMethod('setOption', {
+          'viewId': _viewId,
+          'category': 1,
+          'name': 'opensles',
+          'value': 0,
+        });
+        await _channel.invokeMethod('setOption', {
+          'viewId': _viewId,
+          'category': 1,
+          'name': 'framedrop',
+          'value': 5,
+        });
+        await _channel.invokeMethod('setOption', {
+          'viewId': _viewId,
+          'category': 1,
+          'name': 'packet-buffering',
+          'value': 1,
+        });
+        await _channel.invokeMethod('setOption', {
+          'viewId': _viewId,
+          'category': 4,
+          'name': 'analyzeduration',
+          'value': 1,
+        });
+        await _channel.invokeMethod('setOption', {
+          'viewId': _viewId,
+          'category': 4,
+          'name': 'probesize',
+          'value': 1024 * 10,
+        });
+        await _setDataSource(widget.url);
+      }
+    } catch (e) {
+      widget.onError?.call();
+    }
+  }
+
+  Future<void> _setDataSource(String url) async {
+    if (_viewId < 0) return;
+    try {
+      await _channel.invokeMethod('setDataSource', {
+        'viewId': _viewId,
+        'url': url,
+      });
+    } catch (e) {
+      widget.onError?.call();
+    }
+  }
+
+  Future<void> _setDecoder(int decoderIndex) async {
+    if (_viewId < 0) return;
+    try {
+      await _channel.invokeMethod('setOption', {
+        'viewId': _viewId,
+        'category': 1,
+        'name': 'mediacodec',
+        'value': decoderIndex == 0 ? 1 : 0,
+      });
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  Future<void> _releasePlayer() async {
+    if (_viewId < 0) return;
+    try {
+      await _channel.invokeMethod('releasePlayer', {'viewId': _viewId});
+    } catch (e) {
+      // ignore
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_hasError) {
-      return const Center(
-        child: Text('播放器初始化失败', style: TextStyle(color: Colors.white)),
-      );
+    if (_viewId < 0) {
+      return const Center(child: CircularProgressIndicator());
     }
-    if (_isLoading) {
-      return const Center(child: CircularProgressIndicator(color: Colors.white));
-    }
-    return FlutterIjkView(player: _player, color: Colors.black);
+    return AndroidView(
+      viewType: 'com.example.witv/ijkplayer',
+      creationParams: {'viewId': _viewId},
+      creationParamsCodec: const StandardMessageCodec(),
+    );
   }
 }
