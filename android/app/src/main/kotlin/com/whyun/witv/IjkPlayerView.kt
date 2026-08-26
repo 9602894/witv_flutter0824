@@ -28,9 +28,16 @@ class IjkPlayerView(
     init {
         decoderIndex = (creationParams?.get("decoderIndex") as? Int) ?: 0
 
-        // 修复花屏①：SurfaceView 设为 MediaOverlay，避免被 Flutter UI 覆盖或闪烁
+        // 从 creationParams 读取初始 url（双保险）
+        val initialUrl = creationParams?.get("url") as? String
+        if (initialUrl != null) {
+            currentUrl = initialUrl
+            pendingUrl = initialUrl
+        }
+
+        // 修复花屏①：MediaOverlay 避免被 Flutter UI 覆盖闪烁
         surfaceView.setZOrderMediaOverlay(true)
-        // 修复花屏②：固定像素格式，避免某些设备默认格式不匹配导致画面撕裂
+        // 修复花屏②：固定像素格式
         surfaceView.holder.setFormat(PixelFormat.RGBA_8888)
 
         methodChannel.setMethodCallHandler { call, result ->
@@ -113,7 +120,7 @@ class IjkPlayerView(
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-avc", 1L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-hevc", 1L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-auto-rotate", 1L)
-            // 修复花屏③：华为 6110M 等盒子对动态分辨率支持不好，关闭它
+            // 修复花屏③：华为 6110M 对动态分辨率支持不好，关闭
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-handle-resolution-change", 0L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "framedrop", 1L)
             player.setOption(IjkMediaPlayer.OPT_CATEGORY_CODEC, "skip_loop_filter", 48L)
