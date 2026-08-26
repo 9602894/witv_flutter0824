@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+/// 分组列表 - 支持遥控器焦点导航
 class GroupList extends StatefulWidget {
   final List<String> groups;
   final String? selectedGroup;
@@ -58,12 +59,15 @@ class _GroupListState extends State<GroupList> {
         widget.onSelect(widget.groups[newIndex]);
         _scrollToIndex(newIndex);
       }
+    } else if (key == LogicalKeyboardKey.enter ||
+               key == LogicalKeyboardKey.select) {
+      // 分组选中后通常自动切换，这里可以触发确认
     }
   }
 
   void _scrollToIndex(int index) {
     if (!_scrollController.hasClients) return;
-    final itemHeight = 56.0;
+    final itemHeight = 56.0; // ListTile approximate height
     final offset = index * itemHeight;
     _scrollController.animateTo(
       offset.clamp(0.0, _scrollController.position.maxScrollExtent),
