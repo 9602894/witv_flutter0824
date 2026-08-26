@@ -82,7 +82,6 @@ class _HomeScreenState extends State<HomeScreen> {
   String _channelNumberInput = '';
   Timer? _channelNumberTimer;
 
-  // 退出对话框焦点
   int _exitDialogSelectedIndex = 0;
 
   VoidCallback? _epgListener;
@@ -90,17 +89,18 @@ class _HomeScreenState extends State<HomeScreen> {
 
   DateTime get _beijingNow => EpgParser.beijingNow;
   String _formatTime(DateTime time) => EpgParser.formatBeijingTime(time);
+  String _getDate(DateTime time) {
+    final bj = EpgParser.toBeijing(time);
+    return '${bj.year}-${bj.month.toString().padLeft(2, '0')}-${bj.day.toString().padLeft(2, '0')}';
+  }
 
   @override
   void initState() {
     super.initState();
     _initAsync();
 
-    // 启动后请求一次焦点
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) {
-        _focusNode.requestFocus();
-      }
+      if (mounted) _focusNode.requestFocus();
     });
 
     _epgListener = () {
@@ -129,33 +129,6 @@ class _HomeScreenState extends State<HomeScreen> {
     _loadEpgInBackground();
 
     if (mounted) setState(() => isLoading = false);
-
-    // 修复：主动加载订阅源，解决 didChangeDependencies 时序竞争导致订阅源永不加载的问题
-    _autoLoadSubscription();
-  }
-
-  /// 修复：延迟等待 SettingsService 加载完成后自动加载订阅源
-  Future<void> _autoLoadSubscription() async {
-    // 最多等待 3 秒，让 SettingsService 完成初始化
-    for (var i = 0; i < 30; i++) {
-      await Future.delayed(const Duration(milliseconds: 100));
-      if (!mounted) return;
-
-      final settings = Provider.of<SettingsService>(context, listen: false);
-      if (settings.subscriptions.isNotEmpty) {
-        if (!_autoLoaded && channels.isEmpty) {
-          _autoLoaded = true;
-          final selectedSubs = settings.subscriptions.where((s) => s.selected).toList();
-          if (selectedSubs.isNotEmpty) {
-            await _loadSubscriptionData(selectedSubs.first);
-          } else {
-            await _loadSubscriptionData(settings.subscriptions.first);
-          }
-        }
-        return;
-      }
-    }
-    LogService.write('自动加载订阅源: 超时，未找到订阅源');
   }
 
   void _tryDownloadLogos() {
@@ -538,7 +511,6 @@ class _HomeScreenState extends State<HomeScreen> {
     if (event is! RawKeyDownEvent) return;
     final key = event.logicalKey;
 
-    // 退出对话框显示时，由对话框独占处理按键
     if (_showExitDialog) {
       _handleExitDialogKey(event);
       return;
@@ -581,7 +553,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     if (channels.isEmpty) {
-      // 修复：没有频道时按 OK 键进入设置，引导用户添加订阅源
       if (key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.select) {
         Navigator.push(context, MaterialPageRoute(builder: (_) => SettingsScreen()))
             .then((_) => setState(() {}));
@@ -686,6 +657,47 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  void _handleExitDialogKey(RawKeyEvent event) {
+    if (event is! RawKeyDownEvent) return;
+    final key = event.logicalKey;
+
+    if (key == LogicalKeyboardKey.arrowLeft || key == LogicalKeyboardKey.arrowRight) {
+      setState(() {
+        if (key == LogicalKeyboardKey.arrowLeft) {
+          _exitDialogSelectedIndex = _exitDialogSelectedIndex > 0 ? _exitDialogSelectedIndex - 1 : 2;
+        } else {
+          _exitDialogSelectedIndex = _exitDialogSelectedIndex < 2 ? _exitDialogSelectedIndex + 1 : 0;
+        }
+      });
+    } else if (key == LogicalKeyboardKey.arrowUp) {
+      setState(() => _exitDialogSelectedIndex = 0);
+    } else if (key == LogicalKeyboardKey.arrowDown) {
+      setState(() => _exitDialogSelectedIndex = 2);
+    } else if (key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.select) {
+      _executeExitDialogAction();
+    } else if (key == LogicalKeyboardKey.goBack || key == LogicalKeyboardKey.escape) {
+      setState(() => _showExitDialog = false);
+    }
+  }
+
+  void _executeExitDialogAction() {
+    switch (_exitDialogSelectedIndex) {
+      case 0:
+        setState(() => _showExitDialog = false);
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => SettingsScreen()),
+        ).then((_) => setState(() {}));
+        break;
+      case 1:
+        exit(0);
+        break;
+      case 2:
+        setState(() => _showExitDialog = false);
+        break;
+    }
+  }
+
   Widget _buildTag(String text) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
@@ -763,14 +775,6 @@ class _HomeScreenState extends State<HomeScreen> {
                             fontWeight: FontWeight.bold,
                           ),
                         ),
-                        if (currentChannel?.number != null)
-                          Text(
-                            '频道号: ${currentChannel!.number}',
-                            style: const TextStyle(
-                              color: Colors.white70,
-                              fontSize: 13,
-                            ),
-                          ),
                       ],
                     ),
                   ),
@@ -849,29 +853,11 @@ class _HomeScreenState extends State<HomeScreen> {
       dense: true,
       selected: isSelected,
       selectedTileColor: Colors.white.withOpacity(0.1),
-      leading: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (channel.number != null)
-            Container(
-              width: 40,
-              alignment: Alignment.center,
-              child: Text(
-                '${channel.number}',
-                style: TextStyle(
-                  color: isSelected ? Colors.yellow : Colors.white70,
-                  fontSize: 13,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-          ChannelLogo(
-            channelName: channel.name,
-            width: 36,
-            height: 24,
-            fit: BoxFit.contain,
-          ),
-        ],
+      leading: ChannelLogo(
+        channelName: channel.name,
+        width: 36,
+        height: 24,
+        fit: BoxFit.contain,
       ),
       title: Text(
         channel.name,
@@ -897,47 +883,6 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
       onTap: () => _switchChannel(channel),
     );
-  }
-
-  void _handleExitDialogKey(RawKeyEvent event) {
-    if (event is! RawKeyDownEvent) return;
-    final key = event.logicalKey;
-
-    if (key == LogicalKeyboardKey.arrowLeft || key == LogicalKeyboardKey.arrowRight) {
-      setState(() {
-        if (key == LogicalKeyboardKey.arrowLeft) {
-          _exitDialogSelectedIndex = _exitDialogSelectedIndex > 0 ? _exitDialogSelectedIndex - 1 : 2;
-        } else {
-          _exitDialogSelectedIndex = _exitDialogSelectedIndex < 2 ? _exitDialogSelectedIndex + 1 : 0;
-        }
-      });
-    } else if (key == LogicalKeyboardKey.arrowUp) {
-      setState(() => _exitDialogSelectedIndex = 0);
-    } else if (key == LogicalKeyboardKey.arrowDown) {
-      setState(() => _exitDialogSelectedIndex = 2);
-    } else if (key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.select) {
-      _executeExitDialogAction();
-    } else if (key == LogicalKeyboardKey.goBack || key == LogicalKeyboardKey.escape) {
-      setState(() => _showExitDialog = false);
-    }
-  }
-
-  void _executeExitDialogAction() {
-    switch (_exitDialogSelectedIndex) {
-      case 0:
-        setState(() => _showExitDialog = false);
-        Navigator.push(
-          context,
-          MaterialPageRoute(builder: (_) => SettingsScreen()),
-        ).then((_) => setState(() {}));
-        break;
-      case 1:
-        exit(0);
-        break;
-      case 2:
-        setState(() => _showExitDialog = false);
-        break;
-    }
   }
 
   Widget _buildExitDialog() {
