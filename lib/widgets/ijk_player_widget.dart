@@ -34,6 +34,7 @@ class _IjkPlayerWidgetState extends State<IjkPlayerWidget> {
   @override
   void didUpdateWidget(covariant IjkPlayerWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
+    // 换台时直接发指令，不复建 PlatformView
     if (widget.url != oldWidget.url || widget.decoderIndex != oldWidget.decoderIndex) {
       _setUrl(widget.url, widget.decoderIndex);
     }
@@ -41,17 +42,13 @@ class _IjkPlayerWidgetState extends State<IjkPlayerWidget> {
 
   void _startSpeedTimer() {
     _speedTimer?.cancel();
-    _speedTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
-      try {
-        final speed = await _channel?.invokeMethod<double>('getSpeed');
-        if (speed != null && mounted) widget.onSpeedUpdate?.call(speed);
-      } catch (_) {
-        widget.onSpeedUpdate?.call(0.0);
-      }
+    _speedTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      widget.onSpeedUpdate?.call(0.0);
     });
   }
 
   void _onPlatformViewCreated(int id) {
+    // 关键：动态 channel 名称，与原生端匹配
     _channel = MethodChannel('ijkplayer_view_$id');
     _channel?.setMethodCallHandler((call) async {
       switch (call.method) {
@@ -61,10 +58,13 @@ class _IjkPlayerWidgetState extends State<IjkPlayerWidget> {
           break;
         case 'onInfo':
           final what = call.arguments['what'] as int?;
-          if (what == 3 && mounted) setState(() => _isLoading = false);
+          if (what == 3 && mounted) {
+            setState(() => _isLoading = false);
+          }
           break;
       }
     });
+    // 关键：PlatformView 创建后立即发送 url
     _setUrl(widget.url, widget.decoderIndex);
   }
 
@@ -88,6 +88,7 @@ class _IjkPlayerWidgetState extends State<IjkPlayerWidget> {
     return Stack(
       fit: StackFit.expand,
       children: [
+        // 关键：ExcludeFocus 阻止 PlatformView 抢走遥控器焦点
         ExcludeFocus(
           child: AndroidView(
             viewType: 'ijkplayer_view',
