@@ -59,15 +59,12 @@ class _GroupListState extends State<GroupList> {
         widget.onSelect(widget.groups[newIndex]);
         _scrollToIndex(newIndex);
       }
-    } else if (key == LogicalKeyboardKey.enter ||
-               key == LogicalKeyboardKey.select) {
-      // 分组选中后通常自动切换，这里可以触发确认
     }
   }
 
   void _scrollToIndex(int index) {
     if (!_scrollController.hasClients) return;
-    final itemHeight = 56.0; // ListTile approximate height
+    final itemHeight = 56.0;
     final offset = index * itemHeight;
     _scrollController.animateTo(
       offset.clamp(0.0, _scrollController.position.maxScrollExtent),
@@ -81,31 +78,28 @@ class _GroupListState extends State<GroupList> {
     return RawKeyboardListener(
       focusNode: _focusNode,
       onKey: _handleKey,
-      child: Container(
-        color: Colors.black.withOpacity(0.7),
-        child: ListView.builder(
-          controller: _scrollController,
-          itemCount: widget.groups.length,
-          itemBuilder: (context, index) {
-            final group = widget.groups[index];
-            final isSelected = group == widget.selectedGroup;
-            return ListTile(
-              dense: true,
-              selected: isSelected,
-              selectedTileColor: Colors.blue.withOpacity(0.4),
-              tileColor: isSelected ? Colors.blue.withOpacity(0.3) : Colors.transparent,
-              title: Text(
-                group,
-                style: TextStyle(
-                  color: isSelected ? Colors.yellow : Colors.white,
-                  fontSize: 14,
-                  fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                ),
+      child: ListView.builder(
+        controller: _scrollController,
+        itemCount: widget.groups.length,
+        itemBuilder: (context, index) {
+          final group = widget.groups[index];
+          final isSelected = group == widget.selectedGroup;
+          return ListTile(
+            dense: true,
+            selected: isSelected,
+            selectedTileColor: Colors.blue.withOpacity(0.4),
+            tileColor: isSelected ? Colors.blue.withOpacity(0.3) : Colors.transparent,
+            title: Text(
+              group,
+              style: TextStyle(
+                color: isSelected ? Colors.yellow : Colors.white,
+                fontSize: 14,
+                fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
               ),
-              onTap: () => widget.onSelect(group),
-            );
-          },
-        ),
+            ),
+            onTap: () => widget.onSelect(group),
+          );
+        },
       ),
     );
   }
