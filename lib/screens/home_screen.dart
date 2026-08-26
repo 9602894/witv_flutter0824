@@ -637,25 +637,17 @@ class _HomeScreenState extends State<HomeScreen> {
                    label.contains('return');
 
     // ========== 退出菜单状态 ==========
+    // 关键：全局监听完全让位，让 ExitMenu 自己的 Focus 系统处理所有按键
+    // 只保留返回键作为备选（防止 ExitMenu 焦点丢失时的兜底）
     if (_showExitMenu) {
-      if (isUp) {
-        setState(() => _exitMenuSelectedIndex = (_exitMenuSelectedIndex - 1 + 2) % 2);
-      } else if (isDown) {
-        setState(() => _exitMenuSelectedIndex = (_exitMenuSelectedIndex + 1) % 2);
-      } else if (isOk) {
-        if (_exitMenuSelectedIndex == 0) {
-          setState(() => _showExitMenu = false);
-          Navigator.push(context, MaterialPageRoute(builder: (_) => SettingsScreen()))
-              .then((_) => setState(() {}));
-        } else {
-          exit(0);
-        }
-      } else if (isBack) {
+      if (isBack) {
         setState(() {
           _showExitMenu = false;
           _focusArea = 'none';
         });
+        return;
       }
+      // 方向键、OK 键等全部忽略，让 ExitMenu 的 Focus.onKeyEvent 处理
       return;
     }
 
@@ -1382,11 +1374,10 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
 
-              // 退出菜单
+              // 退出菜单（修改 B：移除 selectedIndex，更新回调）
               if (_showExitMenu)
                 Positioned.fill(
                   child: ExitMenu(
-                    selectedIndex: _exitMenuSelectedIndex,
                     onSettings: () {
                       setState(() => _showExitMenu = false);
                       Navigator.push(context, MaterialPageRoute(builder: (_) => SettingsScreen()))
