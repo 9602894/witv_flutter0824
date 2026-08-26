@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 /// 退出/设置菜单 - 支持遥控器上下选择和OK确认
+/// 使用 Focus + onKeyEvent 方式，对 TV/遥控器 DPad 支持更稳定
 class ExitMenu extends StatefulWidget {
   final VoidCallback onSettings;
   final VoidCallback onExit;
@@ -22,56 +23,65 @@ class _ExitMenuState extends State<ExitMenu> {
   int _selectedIndex = 0;
   final List<String> _items = ['设置', '退出'];
   final List<IconData> _icons = [Icons.settings, Icons.exit_to_app];
-  final FocusNode _focusNode = FocusNode();
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _focusNode.requestFocus();
-    });
+    _selectedIndex = 0;
   }
 
-  @override
-  void dispose() {
-    _focusNode.dispose();
-    super.dispose();
-  }
+  KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
 
-  void _handleKey(RawKeyEvent event) {
-    if (event is! RawKeyDownEvent) return;
     final key = event.logicalKey;
 
-    if (key == LogicalKeyboardKey.arrowUp) {
-      setState(() => _selectedIndex = (_selectedIndex - 1 + _items.length) % _items.length);
-    } else if (key == LogicalKeyboardKey.arrowDown) {
-      setState(() => _selectedIndex = (_selectedIndex + 1) % _items.length);
-    } else if (key == LogicalKeyboardKey.enter ||
-               key == LogicalKeyboardKey.select) {
+    if (key == LogicalKeyboardKey.arrowUp ||
+        key == LogicalKeyboardKey.arrowDown) {
+      setState(() {
+        if (key == LogicalKeyboardKey.arrowUp) {
+          _selectedIndex = (_selectedIndex - 1 + _items.length) % _items.length;
+        } else {
+          _selectedIndex = (_selectedIndex + 1) % _items.length;
+        }
+      });
+      return KeyEventResult.handled;
+    }
+
+    if (key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.select ||
+        key == LogicalKeyboardKey.accept) {
       if (_selectedIndex == 0) {
         widget.onSettings();
       } else {
         widget.onExit();
       }
-    } else if (key == LogicalKeyboardKey.escape ||
-               key == LogicalKeyboardKey.goBack ||
-               key == LogicalKeyboardKey.backspace) {
-      widget.onDismiss();
+      return KeyEventResult.handled;
     }
+
+    if (key == LogicalKeyboardKey.escape ||
+        key == LogicalKeyboardKey.goBack ||
+        key == LogicalKeyboardKey.backspace) {
+      widget.onDismiss();
+      return KeyEventResult.handled;
+    }
+
+    return KeyEventResult.ignored;
   }
 
   @override
   Widget build(BuildContext context) {
-    return RawKeyboardListener(
-      focusNode: _focusNode,
-      onKey: _handleKey,
-      child: GestureDetector(
-        onTap: widget.onDismiss,
-        child: Container(
-          color: Colors.black.withOpacity(0.7),
-          child: Center(
-            child: GestureDetector(
-              onTap: () {}, // 阻止点击穿透
+    return GestureDetector(
+      onTap: widget.onDismiss,
+      child: Container(
+        color: Colors.black.withOpacity(0.7),
+        child: Center(
+          child: GestureDetector(
+            onTap: () {}, // 阻止点击穿透
+            child: Focus(
+              autofocus: true,
+              canRequestFocus: true,
+              descendantsAreFocusable: false,
+              onKeyEvent: _handleKeyEvent,
               child: Container(
                 width: 280,
                 padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 12),
