@@ -34,7 +34,6 @@ class _IjkPlayerWidgetState extends State<IjkPlayerWidget> {
   @override
   void didUpdateWidget(covariant IjkPlayerWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // 换台时直接发指令，不复建 PlatformView
     if (widget.url != oldWidget.url || widget.decoderIndex != oldWidget.decoderIndex) {
       _setUrl(widget.url, widget.decoderIndex);
     }
@@ -48,7 +47,6 @@ class _IjkPlayerWidgetState extends State<IjkPlayerWidget> {
   }
 
   void _onPlatformViewCreated(int id) {
-    // 关键：动态 channel 名称，与原生端匹配
     _channel = MethodChannel('ijkplayer_view_$id');
     _channel?.setMethodCallHandler((call) async {
       switch (call.method) {
@@ -64,7 +62,6 @@ class _IjkPlayerWidgetState extends State<IjkPlayerWidget> {
           break;
       }
     });
-    // 关键：PlatformView 创建后立即发送 url
     _setUrl(widget.url, widget.decoderIndex);
   }
 
@@ -88,17 +85,15 @@ class _IjkPlayerWidgetState extends State<IjkPlayerWidget> {
     return Stack(
       fit: StackFit.expand,
       children: [
-        // 关键：ExcludeFocus 阻止 PlatformView 抢走遥控器焦点
-        ExcludeFocus(
-          child: AndroidView(
-            viewType: 'ijkplayer_view',
-            creationParams: {
-              'url': widget.url,
-              'decoderIndex': widget.decoderIndex,
-            },
-            creationParamsCodec: const StandardMessageCodec(),
-            onPlatformViewCreated: _onPlatformViewCreated,
-          ),
+        // 去掉 ExcludeFocus，避免 PlatformView 渲染异常
+        AndroidView(
+          viewType: 'ijkplayer_view',
+          creationParams: {
+            'url': widget.url,
+            'decoderIndex': widget.decoderIndex,
+          },
+          creationParamsCodec: const StandardMessageCodec(),
+          onPlatformViewCreated: _onPlatformViewCreated,
         ),
         if (_isLoading)
           Container(
