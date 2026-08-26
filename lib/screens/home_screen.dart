@@ -536,11 +536,37 @@ class _HomeScreenState extends State<HomeScreen> {
 
     // ========== 退出菜单状态 ==========
     if (_showExitMenu) {
-      if (key == LogicalKeyboardKey.arrowUp) {
+      // 强制保持焦点，确保 RawKeyboardListener 持续接收事件
+      _focusNode.requestFocus();
+
+      // TV 遥控器 DPad 方向键可能映射为不同 keyId，这里做宽松匹配
+      final isUp = key == LogicalKeyboardKey.arrowUp ||
+                   key == LogicalKeyboardKey.numpad8 ||
+                   key == LogicalKeyboardKey.keyW ||
+                   key.keyId == 0x100000304 ||
+                   key.keyLabel == 'Arrow Up';
+      final isDown = key == LogicalKeyboardKey.arrowDown ||
+                     key == LogicalKeyboardKey.numpad2 ||
+                     key == LogicalKeyboardKey.keyS ||
+                     key.keyId == 0x100000301 ||
+                     key.keyLabel == 'Arrow Down';
+      final isOk = key == LogicalKeyboardKey.enter ||
+                   key == LogicalKeyboardKey.select ||
+                   key == LogicalKeyboardKey.accept ||
+                   key == LogicalKeyboardKey.numpadEnter ||
+                   key.keyId == 0x100000161 ||
+                   key.keyId == 0x10000000d;
+      final isBack = key == LogicalKeyboardKey.escape ||
+                     key == LogicalKeyboardKey.goBack ||
+                     key == LogicalKeyboardKey.backspace ||
+                     key.keyId == 0x100000803 ||
+                     key.keyId == 0x100000008;
+
+      if (isUp) {
         setState(() => _exitMenuSelectedIndex = (_exitMenuSelectedIndex - 1 + 2) % 2);
-      } else if (key == LogicalKeyboardKey.arrowDown) {
+      } else if (isDown) {
         setState(() => _exitMenuSelectedIndex = (_exitMenuSelectedIndex + 1) % 2);
-      } else if (key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.select) {
+      } else if (isOk) {
         if (_exitMenuSelectedIndex == 0) {
           setState(() => _showExitMenu = false);
           Navigator.push(context, MaterialPageRoute(builder: (_) => SettingsScreen()))
@@ -548,7 +574,7 @@ class _HomeScreenState extends State<HomeScreen> {
         } else {
           exit(0);
         }
-      } else if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack || key == LogicalKeyboardKey.backspace) {
+      } else if (isBack) {
         setState(() {
           _showExitMenu = false;
           _focusArea = 'none';
@@ -559,14 +585,20 @@ class _HomeScreenState extends State<HomeScreen> {
 
     // ========== 右侧菜单状态 ==========
     if (_showRightMenu) {
+      _focusNode.requestFocus();
       const menuItemsCount = 5;
-      if (key == LogicalKeyboardKey.arrowUp) {
+      final isUp = key == LogicalKeyboardKey.arrowUp || key == LogicalKeyboardKey.numpad8 || key == LogicalKeyboardKey.keyW || key.keyId == 0x100000304 || key.keyLabel == 'Arrow Up';
+      final isDown = key == LogicalKeyboardKey.arrowDown || key == LogicalKeyboardKey.numpad2 || key == LogicalKeyboardKey.keyS || key.keyId == 0x100000301 || key.keyLabel == 'Arrow Down';
+      final isOk = key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.select || key == LogicalKeyboardKey.accept || key == LogicalKeyboardKey.numpadEnter || key.keyId == 0x100000161 || key.keyId == 0x10000000d;
+      final isBack = key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack || key == LogicalKeyboardKey.backspace || key.keyId == 0x100000803 || key.keyId == 0x100000008;
+
+      if (isUp) {
         setState(() => _rightMenuSelectedIndex = (_rightMenuSelectedIndex - 1 + menuItemsCount) % menuItemsCount);
-      } else if (key == LogicalKeyboardKey.arrowDown) {
+      } else if (isDown) {
         setState(() => _rightMenuSelectedIndex = (_rightMenuSelectedIndex + 1) % menuItemsCount);
-      } else if (key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.select) {
+      } else if (isOk) {
         _executeRightMenuAction(_rightMenuSelectedIndex);
-      } else if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack || key == LogicalKeyboardKey.backspace) {
+      } else if (isBack) {
         setState(() {
           _showRightMenu = false;
           _focusArea = 'none';
@@ -578,27 +610,34 @@ class _HomeScreenState extends State<HomeScreen> {
     // ========== 频道列表状态 ==========
     if (showChannelList && !isScheduleMode) {
       if (channels.isEmpty) return;
-      if (key == LogicalKeyboardKey.arrowUp) {
+      final isUp = key == LogicalKeyboardKey.arrowUp || key == LogicalKeyboardKey.numpad8 || key == LogicalKeyboardKey.keyW || key.keyId == 0x100000304 || key.keyLabel == 'Arrow Up';
+      final isDown = key == LogicalKeyboardKey.arrowDown || key == LogicalKeyboardKey.numpad2 || key == LogicalKeyboardKey.keyS || key.keyId == 0x100000301 || key.keyLabel == 'Arrow Down';
+      final isLeft = key == LogicalKeyboardKey.arrowLeft || key == LogicalKeyboardKey.numpad4 || key == LogicalKeyboardKey.keyA || key.keyId == 0x100000302 || key.keyLabel == 'Arrow Left';
+      final isRight = key == LogicalKeyboardKey.arrowRight || key == LogicalKeyboardKey.numpad6 || key == LogicalKeyboardKey.keyD || key.keyId == 0x100000303 || key.keyLabel == 'Arrow Right';
+      final isOk = key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.select || key == LogicalKeyboardKey.accept || key == LogicalKeyboardKey.numpadEnter || key.keyId == 0x100000161 || key.keyId == 0x10000000d;
+      final isBack = key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack || key == LogicalKeyboardKey.backspace || key.keyId == 0x100000803 || key.keyId == 0x100000008;
+
+      if (isUp) {
         setState(() => _selectedIndex = _selectedIndex > 0 ? _selectedIndex - 1 : channels.length - 1);
-      } else if (key == LogicalKeyboardKey.arrowDown) {
+      } else if (isDown) {
         setState(() => _selectedIndex = _selectedIndex < channels.length - 1 ? _selectedIndex + 1 : 0);
-      } else if (key == LogicalKeyboardKey.arrowLeft) {
+      } else if (isLeft) {
         if (groups.isNotEmpty) {
           final currentIdx = groups.indexOf(currentGroup!);
           final prevIdx = (currentIdx - 1 + groups.length) % groups.length;
           _switchToGroup(groups[prevIdx]);
         }
-      } else if (key == LogicalKeyboardKey.arrowRight) {
+      } else if (isRight) {
         if (groups.isNotEmpty) {
           final currentIdx = groups.indexOf(currentGroup!);
           final nextIdx = (currentIdx + 1) % groups.length;
           _switchToGroup(groups[nextIdx]);
         }
-      } else if (key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.select) {
+      } else if (isOk) {
         if (_selectedIndex >= 0 && _selectedIndex < channels.length) {
           _switchChannel(channels[_selectedIndex]);
         }
-      } else if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack || key == LogicalKeyboardKey.backspace) {
+      } else if (isBack) {
         setState(() {
           showChannelList = false;
           _focusArea = 'none';
@@ -616,7 +655,14 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     // ========== 无窗口状态（核心遥控器逻辑，参考酷9） ==========
-    if (key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.select) {
+    final isUp = key == LogicalKeyboardKey.arrowUp || key == LogicalKeyboardKey.numpad8 || key == LogicalKeyboardKey.keyW || key.keyId == 0x100000304 || key.keyLabel == 'Arrow Up';
+    final isDown = key == LogicalKeyboardKey.arrowDown || key == LogicalKeyboardKey.numpad2 || key == LogicalKeyboardKey.keyS || key.keyId == 0x100000301 || key.keyLabel == 'Arrow Down';
+    final isLeft = key == LogicalKeyboardKey.arrowLeft || key == LogicalKeyboardKey.numpad4 || key == LogicalKeyboardKey.keyA || key.keyId == 0x100000302 || key.keyLabel == 'Arrow Left';
+    final isRight = key == LogicalKeyboardKey.arrowRight || key == LogicalKeyboardKey.numpad6 || key == LogicalKeyboardKey.keyD || key.keyId == 0x100000303 || key.keyLabel == 'Arrow Right';
+    final isOk = key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.select || key == LogicalKeyboardKey.accept || key == LogicalKeyboardKey.numpadEnter || key.keyId == 0x100000161 || key.keyId == 0x10000000d;
+    final isBack = key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack || key == LogicalKeyboardKey.backspace || key.keyId == 0x100000803 || key.keyId == 0x100000008;
+
+    if (isOk) {
       // OK键：显示频道列表
       setState(() {
         isScheduleMode = false;
@@ -627,35 +673,35 @@ class _HomeScreenState extends State<HomeScreen> {
         _focusArea = 'channelList';
         _focusNode.requestFocus();
       });
-    } else if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack || key == LogicalKeyboardKey.backspace) {
+    } else if (isBack) {
       // 返回键：弹出退出菜单
       setState(() {
         _showExitMenu = true;
         _exitMenuSelectedIndex = 0;
         _focusArea = 'exitMenu';
       });
-    } else if (key == LogicalKeyboardKey.arrowUp) {
+    } else if (isUp) {
       // 上键：上一个频道
       if (channels.isNotEmpty) {
         final newIndex = _selectedIndex > 0 ? _selectedIndex - 1 : channels.length - 1;
         setState(() => _selectedIndex = newIndex);
         _switchChannel(channels[newIndex]);
       }
-    } else if (key == LogicalKeyboardKey.arrowDown) {
+    } else if (isDown) {
       // 下键：下一个频道
       if (channels.isNotEmpty) {
         final newIndex = _selectedIndex < channels.length - 1 ? _selectedIndex + 1 : 0;
         setState(() => _selectedIndex = newIndex);
         _switchChannel(channels[newIndex]);
       }
-    } else if (key == LogicalKeyboardKey.arrowLeft) {
+    } else if (isLeft) {
       // 左键：上一个分组
       if (groups.isNotEmpty) {
         final currentIdx = groups.indexOf(currentGroup!);
         final prevIdx = (currentIdx - 1 + groups.length) % groups.length;
         _switchToGroup(groups[prevIdx]);
       }
-    } else if (key == LogicalKeyboardKey.arrowRight) {
+    } else if (isRight) {
       // 右键：下一个分组
       if (groups.isNotEmpty) {
         final currentIdx = groups.indexOf(currentGroup!);
@@ -1287,6 +1333,7 @@ class _HomeScreenState extends State<HomeScreen> {
               if (_showExitMenu)
                 Positioned.fill(
                   child: ExitMenu(
+                    selectedIndex: _exitMenuSelectedIndex,
                     onSettings: () {
                       setState(() => _showExitMenu = false);
                       Navigator.push(context, MaterialPageRoute(builder: (_) => SettingsScreen()))
