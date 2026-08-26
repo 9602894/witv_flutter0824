@@ -33,9 +33,7 @@ class _ChannelLogoState extends State<ChannelLogo> {
   void initState() {
     super.initState();
     _load();
-    _logoListener = () {
-      if (mounted) _load();
-    };
+    _logoListener = () { if (mounted) _load(); };
     LogoService().logoUpdateNotifier.addListener(_logoListener!);
   }
 
@@ -116,27 +114,56 @@ class ChannelList extends StatelessWidget {
       itemBuilder: (context, index) {
         final channel = channels[index];
         final isSelected = channel == selectedChannel;
-        return ListTile(
-          dense: true,
-          leading: showLogo
-              ? ChannelLogo(
-                  channelName: channel.name,
-                  width: 32,
-                  height: 32,
-                )
-              : null,
-          title: Text(
-            showChannelNumber && channel.number != null
-                ? '${channel.number}. ${channel.name}'
-                : channel.name,
-            style: TextStyle(
-              color: isSelected ? Colors.yellow : Colors.white,
-              fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-              fontSize: 14,
+        return InkWell(
+          onTap: () => onSelect(channel),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            decoration: BoxDecoration(
+              color: isSelected ? Colors.white.withOpacity(0.1) : Colors.transparent,
+              border: Border(
+                left: BorderSide(
+                  color: isSelected ? Colors.yellow : Colors.transparent,
+                  width: 3,
+                ),
+              ),
+            ),
+            child: Row(
+              children: [
+                if (showChannelNumber && channel.number != null)
+                  Container(
+                    width: 40,
+                    alignment: Alignment.center,
+                    child: Text(
+                      '${channel.number}',
+                      style: TextStyle(
+                        color: isSelected ? Colors.yellow : Colors.white70,
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                if (showLogo)
+                  ChannelLogo(
+                    channelName: channel.name,
+                    width: 32,
+                    height: 32,
+                  ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    showChannelNumber && channel.number != null
+                        ? '${channel.number}. ${channel.name}'
+                        : channel.name,
+                    style: TextStyle(
+                      color: isSelected ? Colors.yellow : Colors.white,
+                      fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                      fontSize: 14,
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
-          selected: isSelected,
-          onTap: () => onSelect(channel),
         );
       },
     );
