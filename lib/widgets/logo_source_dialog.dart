@@ -111,7 +111,7 @@ class _LogoSourceSettingDialogState extends State<LogoSourceSettingDialog> {
                    key == LogicalKeyboardKey.backspace || keyId == 0x100000803 ||
                    keyId == 0x100000008 || label.contains('back');
 
-    final itemCount = _items.length + 1; // +1 for save button
+    final itemCount = _items.length + 1;
 
     if (isUp) {
       setState(() => _selectedIndex = _selectedIndex > 0 ? _selectedIndex - 1 : itemCount - 1);
