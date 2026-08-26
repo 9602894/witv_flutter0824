@@ -19,7 +19,7 @@ import '../widgets/group_list.dart';
 import '../widgets/schedule_view.dart';
 import '../widgets/channel_list.dart';
 import '../widgets/logo_source_dialog.dart';
-import '../widgets/exit_menu.dart';          // 新增导入
+import '../widgets/exit_menu.dart';
 import 'settings_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -39,12 +39,6 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _showEpgInfo = true;
   bool isEditMode = false;
   bool _showRightMenu = false;
-
-  // 新增状态变量
-  bool _showExitMenu = false;
-  int _exitMenuSelectedIndex = 0;
-  String _focusArea = 'none'; // 'none', 'channelList', 'exitMenu', 'rightMenu'
-  int _rightMenuSelectedIndex = 0;
 
   double subWeight = 0.2;
   double groupWeight = 0.2;
@@ -87,6 +81,10 @@ class _HomeScreenState extends State<HomeScreen> {
 
   VoidCallback? _epgListener;
   bool _autoLoaded = false;
+  bool _showExitMenu = false;
+  int _exitMenuSelectedIndex = 0;
+  String _focusArea = 'none'; // 'none', 'channelList', 'exitMenu', 'rightMenu'
+  int _rightMenuSelectedIndex = 0;
 
   DateTime get _beijingNow => EpgParser.beijingNow;
   String _formatTime(DateTime time) => EpgParser.formatBeijingTime(time);
@@ -104,6 +102,7 @@ class _HomeScreenState extends State<HomeScreen> {
       if (!mounted) return;
       _updateEpgInfo();
       if (isScheduleMode) setState(() {});
+      // EPG加载/更新完成后，触发台标下载
       _tryDownloadLogos();
     };
     EpgParser.epgUpdateCounter.addListener(_epgListener!);
@@ -114,13 +113,16 @@ class _HomeScreenState extends State<HomeScreen> {
     await _initLayoutConfigFile();
     await _loadLayoutConfig();
 
+    // 如果没有配置台标来源，弹出设置对话框（阻塞等待用户选择）
     final hasLogoSource = await _logoService.hasConfiguredSource();
     if (!hasLogoSource && mounted) {
       LogService.write('Logo: 首次使用，引导用户设置台标来源');
       await LogoSourceSettingDialog.show(context, isFirstTime: true);
     }
 
+    // 用户设置完来源后，触发台标下载（此时订阅源可能已在 didChangeDependencies 中加载）
     _tryDownloadLogos();
+
     _initEpgScheduler();
     _startEpgInfoTimer();
     _loadEpgInBackground();
@@ -128,6 +130,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (mounted) setState(() => isLoading = false);
   }
 
+  /// 尝试下载台标：有频道数据且配置了来源时才执行
   void _tryDownloadLogos() {
     if (channels.isEmpty) return;
     _logoService.hasConfiguredSource().then((hasSource) {
@@ -362,6 +365,7 @@ class _HomeScreenState extends State<HomeScreen> {
     });
 
     _logoService.preloadAllLogos(channels);
+    // 切换分组后，下载新分组中尚未缓存的台标
     _tryDownloadLogos();
     if (currentChannel != null) {
       _updateEpgInfo();
@@ -496,16 +500,17 @@ class _HomeScreenState extends State<HomeScreen> {
     if (currentChannel != null) {
       _updateEpgInfo();
     }
+
+    // 频道列表加载完成后，尝试下载台标（来源可能已配置）
     _tryDownloadLogos();
   }
 
-  // ========== 遥控器核心逻辑 ==========
   void _handleKeyEvent(RawKeyEvent event) {
     if (event is! RawKeyDownEvent) return;
 
     final key = event.logicalKey;
 
-    // 数字键（全局）
+    // ========== 数字键（全局） ==========
     final digitKeys = [
       LogicalKeyboardKey.digit0, LogicalKeyboardKey.digit1,
       LogicalKeyboardKey.digit2, LogicalKeyboardKey.digit3,
@@ -529,7 +534,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _digitBuffer = '';
     }
 
-    // 退出菜单状态
+    // ========== 退出菜单状态 ==========
     if (_showExitMenu) {
       if (key == LogicalKeyboardKey.arrowUp) {
         setState(() => _exitMenuSelectedIndex = (_exitMenuSelectedIndex - 1 + 2) % 2);
@@ -543,7 +548,7 @@ class _HomeScreenState extends State<HomeScreen> {
         } else {
           exit(0);
         }
-      } else if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack) {
+      } else if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack || key == LogicalKeyboardKey.backspace) {
         setState(() {
           _showExitMenu = false;
           _focusArea = 'none';
@@ -552,7 +557,7 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    // 右侧菜单状态
+    // ========== 右侧菜单状态 ==========
     if (_showRightMenu) {
       const menuItemsCount = 5;
       if (key == LogicalKeyboardKey.arrowUp) {
@@ -561,7 +566,7 @@ class _HomeScreenState extends State<HomeScreen> {
         setState(() => _rightMenuSelectedIndex = (_rightMenuSelectedIndex + 1) % menuItemsCount);
       } else if (key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.select) {
         _executeRightMenuAction(_rightMenuSelectedIndex);
-      } else if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack) {
+      } else if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack || key == LogicalKeyboardKey.backspace) {
         setState(() {
           _showRightMenu = false;
           _focusArea = 'none';
@@ -570,7 +575,7 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    // 频道列表状态
+    // ========== 频道列表状态 ==========
     if (showChannelList && !isScheduleMode) {
       if (channels.isEmpty) return;
       if (key == LogicalKeyboardKey.arrowUp) {
@@ -593,7 +598,7 @@ class _HomeScreenState extends State<HomeScreen> {
         if (_selectedIndex >= 0 && _selectedIndex < channels.length) {
           _switchChannel(channels[_selectedIndex]);
         }
-      } else if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack) {
+      } else if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack || key == LogicalKeyboardKey.backspace) {
         setState(() {
           showChannelList = false;
           _focusArea = 'none';
@@ -602,15 +607,15 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    // 节目单模式
+    // ========== 节目单模式 ==========
     if (isScheduleMode) {
-      if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack) {
+      if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack || key == LogicalKeyboardKey.backspace) {
         setState(() => isScheduleMode = false);
       }
       return;
     }
 
-    // 无窗口状态（核心遥控器逻辑，参考酷9）
+    // ========== 无窗口状态（核心遥控器逻辑，参考酷9） ==========
     if (key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.select) {
       // OK键：显示频道列表
       setState(() {
@@ -622,7 +627,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _focusArea = 'channelList';
         _focusNode.requestFocus();
       });
-    } else if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack) {
+    } else if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack || key == LogicalKeyboardKey.backspace) {
       // 返回键：弹出退出菜单
       setState(() {
         _showExitMenu = true;
@@ -630,24 +635,28 @@ class _HomeScreenState extends State<HomeScreen> {
         _focusArea = 'exitMenu';
       });
     } else if (key == LogicalKeyboardKey.arrowUp) {
+      // 上键：上一个频道
       if (channels.isNotEmpty) {
         final newIndex = _selectedIndex > 0 ? _selectedIndex - 1 : channels.length - 1;
         setState(() => _selectedIndex = newIndex);
         _switchChannel(channels[newIndex]);
       }
     } else if (key == LogicalKeyboardKey.arrowDown) {
+      // 下键：下一个频道
       if (channels.isNotEmpty) {
         final newIndex = _selectedIndex < channels.length - 1 ? _selectedIndex + 1 : 0;
         setState(() => _selectedIndex = newIndex);
         _switchChannel(channels[newIndex]);
       }
     } else if (key == LogicalKeyboardKey.arrowLeft) {
+      // 左键：上一个分组
       if (groups.isNotEmpty) {
         final currentIdx = groups.indexOf(currentGroup!);
         final prevIdx = (currentIdx - 1 + groups.length) % groups.length;
         _switchToGroup(groups[prevIdx]);
       }
     } else if (key == LogicalKeyboardKey.arrowRight) {
+      // 右键：下一个分组
       if (groups.isNotEmpty) {
         final currentIdx = groups.indexOf(currentGroup!);
         final nextIdx = (currentIdx + 1) % groups.length;
@@ -700,7 +709,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // ========== UI 构建 ==========
   Widget _buildTag(String text) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
@@ -771,7 +779,6 @@ class _HomeScreenState extends State<HomeScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          // 显示频道号 + 名称
                           currentChannel != null && currentChannel!.number != null
                               ? '${currentChannel!.number}. ${currentChannel!.name}'
                               : (currentChannel?.name ?? ''),
@@ -851,7 +858,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // 修改后的频道项（带频道号）
   Widget _buildChannelItem(Channel channel, int index) {
     final currentEpg = EpgParser.getCurrentProgramSync(channel.name);
     final isSelected = currentChannel?.name == channel.name;
@@ -908,76 +914,6 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
       onTap: () => _switchChannel(channel),
     );
-  }
-
-  // 修改后的菜单项（支持选中索引）
-  Widget _buildMenuItem(IconData icon, String label, VoidCallback onTap, int index) {
-    final isSelected = _showRightMenu && _rightMenuSelectedIndex == index;
-    return ListTile(
-      leading: Icon(icon, color: isSelected ? Colors.yellow : Colors.white),
-      title: Text(
-        label,
-        style: TextStyle(
-          color: isSelected ? Colors.yellow : Colors.white,
-          fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-        ),
-      ),
-      tileColor: isSelected ? Colors.white.withOpacity(0.15) : Colors.transparent,
-      onTap: onTap,
-    );
-  }
-
-  Widget _buildDragBar({required void Function(double) onDrag, required bool isEditMode}) {
-    if (!isEditMode) return const SizedBox.shrink();
-    return GestureDetector(
-      onHorizontalDragUpdate: (details) {
-        final width = MediaQuery.of(context).size.width * 0.7;
-        onDrag(details.delta.dx / width);
-      },
-      child: Container(width: 8, color: Colors.white24),
-    );
-  }
-
-  Widget _buildSubscriptionList() {
-    return Consumer<SettingsService>(
-      builder: (context, settings, _) {
-        final subs = settings.subscriptions;
-        _hasSubscriptions = subs.isNotEmpty;
-        if (!_hasSubscriptions) {
-          return const Center(child: Text('无订阅源', style: TextStyle(color: Colors.white)));
-        }
-        return ListView.builder(
-          itemCount: subs.length,
-          itemBuilder: (_, index) {
-            final sub = subs[index];
-            final isSelected = currentSubName == sub.name;
-            return ListTile(
-              title: Text(sub.name, style: TextStyle(
-                color: isSelected ? Colors.yellow : Colors.white,
-                fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-              )),
-              onTap: () => _loadSubscriptionData(sub),
-            );
-          },
-        );
-      },
-    );
-  }
-
-  Widget _buildGroupList() {
-    return GroupList(
-      groups: groups,
-      selectedGroup: currentGroup,
-      onSelect: _switchToGroup,
-    );
-  }
-
-  void _showAddSubscriptionDialog() {}
-  void _showAddEpgDialog() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => SettingsScreen()),
-    ).then((_) => setState(() {}));
   }
 
   @override
@@ -1281,7 +1217,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: _buildEpgInfoBar(),
               ),
 
-              // 右侧菜单
               if (_showRightMenu)
                 Positioned(
                   top: 0, right: 0, bottom: 0,
@@ -1320,24 +1255,6 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
 
-              // 退出菜单
-              if (_showExitMenu)
-                Positioned.fill(
-                  child: ExitMenu(
-                    onSettings: () {
-                      setState(() => _showExitMenu = false);
-                      Navigator.push(context, MaterialPageRoute(builder: (_) => SettingsScreen()))
-                          .then((_) => setState(() {}));
-                    },
-                    onExit: () => exit(0),
-                    onDismiss: () => setState(() {
-                      _showExitMenu = false;
-                      _focusArea = 'none';
-                    }),
-                  ),
-                ),
-
-              // 顶部工具栏
               Positioned(
                 top: 0, right: 0,
                 child: Row(
@@ -1365,10 +1282,97 @@ class _HomeScreenState extends State<HomeScreen> {
                   ],
                 ),
               ),
+
+              // 退出菜单
+              if (_showExitMenu)
+                Positioned.fill(
+                  child: ExitMenu(
+                    onSettings: () {
+                      setState(() => _showExitMenu = false);
+                      Navigator.push(context, MaterialPageRoute(builder: (_) => SettingsScreen()))
+                          .then((_) => setState(() {}));
+                    },
+                    onExit: () => exit(0),
+                    onDismiss: () => setState(() {
+                      _showExitMenu = false;
+                      _focusArea = 'none';
+                    }),
+                  ),
+                ),
             ],
           ),
         ),
       ),
     );
+  }
+
+  Widget _buildDragBar({required void Function(double) onDrag, required bool isEditMode}) {
+    if (!isEditMode) return const SizedBox.shrink();
+    return GestureDetector(
+      onHorizontalDragUpdate: (details) {
+        final width = MediaQuery.of(context).size.width * 0.7;
+        onDrag(details.delta.dx / width);
+      },
+      child: Container(width: 8, color: Colors.white24),
+    );
+  }
+
+  Widget _buildMenuItem(IconData icon, String label, VoidCallback onTap, int index) {
+    final isSelected = _showRightMenu && _rightMenuSelectedIndex == index;
+    return ListTile(
+      leading: Icon(icon, color: isSelected ? Colors.yellow : Colors.white),
+      title: Text(
+        label,
+        style: TextStyle(
+          color: isSelected ? Colors.yellow : Colors.white,
+          fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+        ),
+      ),
+      tileColor: isSelected ? Colors.white.withOpacity(0.15) : Colors.transparent,
+      onTap: onTap,
+    );
+  }
+
+  Widget _buildSubscriptionList() {
+    return Consumer<SettingsService>(
+      builder: (context, settings, _) {
+        final subs = settings.subscriptions;
+        _hasSubscriptions = subs.isNotEmpty;
+        if (!_hasSubscriptions) {
+          return const Center(child: Text('无订阅源', style: TextStyle(color: Colors.white)));
+        }
+        return ListView.builder(
+          itemCount: subs.length,
+          itemBuilder: (_, index) {
+            final sub = subs[index];
+            final isSelected = currentSubName == sub.name;
+            return ListTile(
+              title: Text(sub.name, style: TextStyle(
+                color: isSelected ? Colors.yellow : Colors.white,
+                fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+              )),
+              onTap: () => _loadSubscriptionData(sub),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildGroupList() {
+    return GroupList(
+      groups: groups,
+      selectedGroup: currentGroup,
+      onSelect: _switchToGroup,
+    );
+  }
+
+  void _showAddSubscriptionDialog() {}
+
+  void _showAddEpgDialog() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => SettingsScreen()),
+    ).then((_) => setState(() {}));
   }
 }
