@@ -19,6 +19,7 @@ import '../widgets/group_list.dart';
 import '../widgets/schedule_view.dart';
 import '../widgets/channel_list.dart';
 import '../widgets/logo_source_dialog.dart';
+import '../widgets/exit_menu.dart';          // 新增导入
 import 'settings_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -38,6 +39,12 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _showEpgInfo = true;
   bool isEditMode = false;
   bool _showRightMenu = false;
+
+  // 新增状态变量
+  bool _showExitMenu = false;
+  int _exitMenuSelectedIndex = 0;
+  String _focusArea = 'none'; // 'none', 'channelList', 'exitMenu', 'rightMenu'
+  int _rightMenuSelectedIndex = 0;
 
   double subWeight = 0.2;
   double groupWeight = 0.2;
@@ -77,13 +84,6 @@ class _HomeScreenState extends State<HomeScreen> {
   int _selectedIndex = -1;
   String _digitBuffer = '';
   Timer? _digitTimer;
-
-  // ========== 新增字段：退出菜单 & 数字键 ==========
-  bool _showExitDialog = false;
-  int _exitDialogSelectedIndex = 0;
-  String _channelNumberInput = '';
-  Timer? _channelNumberTimer;
-  // ================================================
 
   VoidCallback? _epgListener;
   bool _autoLoaded = false;
@@ -238,7 +238,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _epgInfoTimer?.cancel();
     _retryTimer?.cancel();
     _digitTimer?.cancel();
-    _channelNumberTimer?.cancel();
+    _focusNode.dispose();
     _saveLayoutConfig();
     super.dispose();
   }
@@ -332,8 +332,6 @@ class _HomeScreenState extends State<HomeScreen> {
     _cancelRetry();
     _digitBuffer = '';
     _digitTimer?.cancel();
-    _channelNumberTimer?.cancel();
-    _channelNumberInput = '';
 
     setState(() {
       currentChannel = ch;
@@ -352,8 +350,6 @@ class _HomeScreenState extends State<HomeScreen> {
     _cancelRetry();
     _digitBuffer = '';
     _digitTimer?.cancel();
-    _channelNumberTimer?.cancel();
-    _channelNumberInput = '';
 
     setState(() {
       currentGroup = groupName;
@@ -503,30 +499,13 @@ class _HomeScreenState extends State<HomeScreen> {
     _tryDownloadLogos();
   }
 
-  // ========== 修改：扩展遥控器支持 ==========
+  // ========== 遥控器核心逻辑 ==========
   void _handleKeyEvent(RawKeyEvent event) {
     if (event is! RawKeyDownEvent) return;
+
     final key = event.logicalKey;
 
-    // 退出对话框优先处理
-    if (_showExitDialog) {
-      _handleExitDialogKey(event);
-      return;
-    }
-
-    if (key == LogicalKeyboardKey.contextMenu) {
-      Navigator.push(context, MaterialPageRoute(builder: (_) => SettingsScreen()))
-          .then((_) => setState(() {}));
-      return;
-    }
-
-    // 返回键弹出退出对话框
-    if (key == LogicalKeyboardKey.goBack || key == LogicalKeyboardKey.escape) {
-      setState(() => _showExitDialog = true);
-      return;
-    }
-
-    // 数字键
+    // 数字键（全局）
     final digitKeys = [
       LogicalKeyboardKey.digit0, LogicalKeyboardKey.digit1,
       LogicalKeyboardKey.digit2, LogicalKeyboardKey.digit3,
@@ -535,33 +514,65 @@ class _HomeScreenState extends State<HomeScreen> {
       LogicalKeyboardKey.digit8, LogicalKeyboardKey.digit9,
     ];
     if (digitKeys.contains(key)) {
-      _channelNumberTimer?.cancel();
-      setState(() => _channelNumberInput += key.keyLabel);
-      _channelNumberTimer = Timer(const Duration(milliseconds: 1500), () {
-        _jumpToChannelNumber(_channelNumberInput);
-        setState(() => _channelNumberInput = '');
+      _digitTimer?.cancel();
+      _digitBuffer += key.keyLabel;
+      _digitTimer = Timer(const Duration(milliseconds: 1500), () {
+        _jumpToChannelNumber(_digitBuffer);
+        _digitBuffer = '';
       });
       return;
     }
 
-    if (_channelNumberInput.isNotEmpty) {
-      _channelNumberTimer?.cancel();
-      _jumpToChannelNumber(_channelNumberInput);
-      setState(() => _channelNumberInput = '');
+    if (_digitBuffer.isNotEmpty) {
+      _digitTimer?.cancel();
+      _jumpToChannelNumber(_digitBuffer);
+      _digitBuffer = '';
     }
 
-    if (channels.isEmpty) {
-      if (key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.select) {
-        Navigator.push(context, MaterialPageRoute(builder: (_) => SettingsScreen()))
-            .then((_) => setState(() {}));
+    // 退出菜单状态
+    if (_showExitMenu) {
+      if (key == LogicalKeyboardKey.arrowUp) {
+        setState(() => _exitMenuSelectedIndex = (_exitMenuSelectedIndex - 1 + 2) % 2);
+      } else if (key == LogicalKeyboardKey.arrowDown) {
+        setState(() => _exitMenuSelectedIndex = (_exitMenuSelectedIndex + 1) % 2);
+      } else if (key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.select) {
+        if (_exitMenuSelectedIndex == 0) {
+          setState(() => _showExitMenu = false);
+          Navigator.push(context, MaterialPageRoute(builder: (_) => SettingsScreen()))
+              .then((_) => setState(() {}));
+        } else {
+          exit(0);
+        }
+      } else if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack) {
+        setState(() {
+          _showExitMenu = false;
+          _focusArea = 'none';
+        });
       }
       return;
     }
 
-    if (isEditMode || isScheduleMode) return;
+    // 右侧菜单状态
+    if (_showRightMenu) {
+      const menuItemsCount = 5;
+      if (key == LogicalKeyboardKey.arrowUp) {
+        setState(() => _rightMenuSelectedIndex = (_rightMenuSelectedIndex - 1 + menuItemsCount) % menuItemsCount);
+      } else if (key == LogicalKeyboardKey.arrowDown) {
+        setState(() => _rightMenuSelectedIndex = (_rightMenuSelectedIndex + 1) % menuItemsCount);
+      } else if (key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.select) {
+        _executeRightMenuAction(_rightMenuSelectedIndex);
+      } else if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack) {
+        setState(() {
+          _showRightMenu = false;
+          _focusArea = 'none';
+        });
+      }
+      return;
+    }
 
-    if (showChannelList) {
-      // 列表模式（母版原有逻辑）
+    // 频道列表状态
+    if (showChannelList && !isScheduleMode) {
+      if (channels.isEmpty) return;
       if (key == LogicalKeyboardKey.arrowUp) {
         setState(() => _selectedIndex = _selectedIndex > 0 ? _selectedIndex - 1 : channels.length - 1);
       } else if (key == LogicalKeyboardKey.arrowDown) {
@@ -582,128 +593,114 @@ class _HomeScreenState extends State<HomeScreen> {
         if (_selectedIndex >= 0 && _selectedIndex < channels.length) {
           _switchChannel(channels[_selectedIndex]);
         }
-      }
-    } else {
-      // 非列表模式（新增）
-      if (key == LogicalKeyboardKey.arrowUp) {
-        final currentIdx = currentChannel != null ? channels.indexOf(currentChannel!) : -1;
-        final newIdx = currentIdx > 0 ? currentIdx - 1 : channels.length - 1;
-        if (newIdx >= 0 && newIdx < channels.length) {
-          _switchChannel(channels[newIdx]);
-        }
-      } else if (key == LogicalKeyboardKey.arrowDown) {
-        final currentIdx = currentChannel != null ? channels.indexOf(currentChannel!) : -1;
-        final newIdx = currentIdx < channels.length - 1 ? currentIdx + 1 : 0;
-        if (newIdx >= 0 && newIdx < channels.length) {
-          _switchChannel(channels[newIdx]);
-        }
-      } else if (key == LogicalKeyboardKey.arrowLeft) {
-        if (groups.isNotEmpty) {
-          final currentIdx = groups.indexOf(currentGroup!);
-          final prevIdx = (currentIdx - 1 + groups.length) % groups.length;
-          _switchToGroup(groups[prevIdx]);
-        }
-      } else if (key == LogicalKeyboardKey.arrowRight) {
-        if (groups.isNotEmpty) {
-          final currentIdx = groups.indexOf(currentGroup!);
-          final nextIdx = (currentIdx + 1) % groups.length;
-          _switchToGroup(groups[nextIdx]);
-        }
-      } else if (key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.select) {
+      } else if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack) {
         setState(() {
-          showChannelList = true;
-          _showRightMenu = false;
-          _showEpgInfo = false;
-          _epgInfoHideTimer?.cancel();
+          showChannelList = false;
+          _focusArea = 'none';
         });
+      }
+      return;
+    }
+
+    // 节目单模式
+    if (isScheduleMode) {
+      if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack) {
+        setState(() => isScheduleMode = false);
+      }
+      return;
+    }
+
+    // 无窗口状态（核心遥控器逻辑，参考酷9）
+    if (key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.select) {
+      // OK键：显示频道列表
+      setState(() {
+        isScheduleMode = false;
+        showChannelList = true;
+        _showRightMenu = false;
+        _showEpgInfo = false;
+        _epgInfoHideTimer?.cancel();
+        _focusArea = 'channelList';
+        _focusNode.requestFocus();
+      });
+    } else if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack) {
+      // 返回键：弹出退出菜单
+      setState(() {
+        _showExitMenu = true;
+        _exitMenuSelectedIndex = 0;
+        _focusArea = 'exitMenu';
+      });
+    } else if (key == LogicalKeyboardKey.arrowUp) {
+      if (channels.isNotEmpty) {
+        final newIndex = _selectedIndex > 0 ? _selectedIndex - 1 : channels.length - 1;
+        setState(() => _selectedIndex = newIndex);
+        _switchChannel(channels[newIndex]);
+      }
+    } else if (key == LogicalKeyboardKey.arrowDown) {
+      if (channels.isNotEmpty) {
+        final newIndex = _selectedIndex < channels.length - 1 ? _selectedIndex + 1 : 0;
+        setState(() => _selectedIndex = newIndex);
+        _switchChannel(channels[newIndex]);
+      }
+    } else if (key == LogicalKeyboardKey.arrowLeft) {
+      if (groups.isNotEmpty) {
+        final currentIdx = groups.indexOf(currentGroup!);
+        final prevIdx = (currentIdx - 1 + groups.length) % groups.length;
+        _switchToGroup(groups[prevIdx]);
+      }
+    } else if (key == LogicalKeyboardKey.arrowRight) {
+      if (groups.isNotEmpty) {
+        final currentIdx = groups.indexOf(currentGroup!);
+        final nextIdx = (currentIdx + 1) % groups.length;
+        _switchToGroup(groups[nextIdx]);
       }
     }
   }
-  // =========================================
 
-  // ========== 新增：数字键跳台 ==========
   void _jumpToChannelNumber(String digits) {
     if (digits.isEmpty) return;
     final targetNumber = int.tryParse(digits);
     if (targetNumber == null) return;
-
     Channel? found;
-    String? foundGroup;
-
-    if (_fullGroupMap != null) {
-      for (final entry in _fullGroupMap!.entries) {
-        for (final ch in entry.value) {
-          if (ch.number == targetNumber) {
-            found = ch;
-            foundGroup = entry.key;
-            break;
-          }
-        }
-        if (found != null) break;
+    for (final ch in channels) {
+      if (ch.number == targetNumber) {
+        found = ch;
+        break;
       }
     }
-
-    if (found == null) {
-      for (final ch in channels) {
-        if (ch.number == targetNumber) {
-          found = ch;
-          break;
-        }
-      }
-    }
-
     if (found != null) {
-      if (foundGroup != null && foundGroup != currentGroup) {
-        _switchToGroup(foundGroup);
-      }
       _switchChannel(found);
     }
   }
-  // =====================================
 
-  // ========== 新增：退出对话框按键处理 ==========
-  void _handleExitDialogKey(RawKeyEvent event) {
-    if (event is! RawKeyDownEvent) return;
-    final key = event.logicalKey;
-
-    if (key == LogicalKeyboardKey.arrowLeft || key == LogicalKeyboardKey.arrowRight) {
-      setState(() {
-        if (key == LogicalKeyboardKey.arrowLeft) {
-          _exitDialogSelectedIndex = _exitDialogSelectedIndex > 0 ? _exitDialogSelectedIndex - 1 : 2;
+  void _executeRightMenuAction(int index) {
+    setState(() {
+      _showRightMenu = false;
+      _focusArea = 'none';
+    });
+    switch (index) {
+      case 0: // 设置
+        Navigator.push(context, MaterialPageRoute(builder: (_) => SettingsScreen()))
+            .then((_) => setState(() {}));
+        break;
+      case 1: // 编辑
+        if (isEditMode) {
+          _exitEditMode();
         } else {
-          _exitDialogSelectedIndex = _exitDialogSelectedIndex < 2 ? _exitDialogSelectedIndex + 1 : 0;
+          setState(() => isEditMode = true);
         }
-      });
-    } else if (key == LogicalKeyboardKey.arrowUp) {
-      setState(() => _exitDialogSelectedIndex = 0);
-    } else if (key == LogicalKeyboardKey.arrowDown) {
-      setState(() => _exitDialogSelectedIndex = 2);
-    } else if (key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.select) {
-      _executeExitDialogAction();
-    } else if (key == LogicalKeyboardKey.goBack || key == LogicalKeyboardKey.escape) {
-      setState(() => _showExitDialog = false);
-    }
-  }
-
-  void _executeExitDialogAction() {
-    switch (_exitDialogSelectedIndex) {
-      case 0:
-        setState(() => _showExitDialog = false);
-        Navigator.push(
-          context,
-          MaterialPageRoute(builder: (_) => SettingsScreen()),
-        ).then((_) => setState(() {}));
         break;
-      case 1:
-        exit(0);
+      case 2: // 列表订阅
+        _showAddSubscriptionDialog();
         break;
-      case 2:
-        setState(() => _showExitDialog = false);
+      case 3: // EPG订阅
+        _showAddEpgDialog();
+        break;
+      case 4: // 关闭
         break;
     }
   }
-  // =============================================
 
+  // ========== UI 构建 ==========
   Widget _buildTag(String text) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
@@ -774,7 +771,10 @@ class _HomeScreenState extends State<HomeScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          currentChannel?.name ?? '',
+                          // 显示频道号 + 名称
+                          currentChannel != null && currentChannel!.number != null
+                              ? '${currentChannel!.number}. ${currentChannel!.name}'
+                              : (currentChannel?.name ?? ''),
                           style: const TextStyle(
                             color: Colors.white,
                             fontSize: 20,
@@ -851,6 +851,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  // 修改后的频道项（带频道号）
   Widget _buildChannelItem(Channel channel, int index) {
     final currentEpg = EpgParser.getCurrentProgramSync(channel.name);
     final isSelected = currentChannel?.name == channel.name;
@@ -859,11 +860,29 @@ class _HomeScreenState extends State<HomeScreen> {
       dense: true,
       selected: isSelected,
       selectedTileColor: Colors.white.withOpacity(0.1),
-      leading: ChannelLogo(
-        channelName: channel.name,
-        width: 36,
-        height: 24,
-        fit: BoxFit.contain,
+      leading: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (channel.number != null)
+            Container(
+              width: 36,
+              alignment: Alignment.center,
+              child: Text(
+                '${channel.number}',
+                style: TextStyle(
+                  color: isSelected ? Colors.yellow : Colors.white70,
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ChannelLogo(
+            channelName: channel.name,
+            width: 36,
+            height: 24,
+            fit: BoxFit.contain,
+          ),
+        ],
       ),
       title: Text(
         channel.name,
@@ -883,7 +902,7 @@ class _HomeScreenState extends State<HomeScreen> {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             )
-          : Text(
+          : const Text(
               '暂无节目信息',
               style: TextStyle(color: Colors.white38, fontSize: 11),
             ),
@@ -891,544 +910,20 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // ========== 新增：退出对话框 ==========
-  Widget _buildExitDialog() {
-    if (!_showExitDialog) return const SizedBox.shrink();
-
-    return GestureDetector(
-      onTap: () => setState(() => _showExitDialog = false),
-      child: Container(
-        color: Colors.black.withOpacity(0.5),
-        child: Center(
-          child: GestureDetector(
-            onTap: () {},
-            child: Container(
-              width: 320,
-              padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.9),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: Colors.white.withOpacity(0.2)),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.5),
-                    blurRadius: 20,
-                    spreadRadius: 5,
-                  ),
-                ],
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(
-                    Icons.live_tv,
-                    color: Colors.white70,
-                    size: 48,
-                  ),
-                  const SizedBox(height: 16),
-                  const Text(
-                    'Witv 播放器',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  const Text(
-                    '您想要做什么？',
-                    style: TextStyle(
-                      color: Colors.white70,
-                      fontSize: 14,
-                    ),
-                  ),
-                  const SizedBox(height: 28),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: _buildExitDialogButton(
-                          index: 0,
-                          icon: Icons.settings,
-                          label: '设置',
-                          activeColor: Colors.blue,
-                          onTap: () {
-                            _exitDialogSelectedIndex = 0;
-                            _executeExitDialogAction();
-                          },
-                        ),
-                      ),
-                      const SizedBox(width: 16),
-                      Expanded(
-                        child: _buildExitDialogButton(
-                          index: 1,
-                          icon: Icons.power_settings_new,
-                          label: '退出',
-                          activeColor: Colors.red,
-                          onTap: () {
-                            _exitDialogSelectedIndex = 1;
-                            _executeExitDialogAction();
-                          },
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-                  _buildExitDialogCancelButton(),
-                ],
-              ),
-            ),
-          ),
+  // 修改后的菜单项（支持选中索引）
+  Widget _buildMenuItem(IconData icon, String label, VoidCallback onTap, int index) {
+    final isSelected = _showRightMenu && _rightMenuSelectedIndex == index;
+    return ListTile(
+      leading: Icon(icon, color: isSelected ? Colors.yellow : Colors.white),
+      title: Text(
+        label,
+        style: TextStyle(
+          color: isSelected ? Colors.yellow : Colors.white,
+          fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
         ),
       ),
-    );
-  }
-
-  Widget _buildExitDialogButton({
-    required int index,
-    required IconData icon,
-    required String label,
-    required Color activeColor,
-    required VoidCallback onTap,
-  }) {
-    final isSelected = _exitDialogSelectedIndex == index;
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 150),
-      decoration: BoxDecoration(
-        color: isSelected ? activeColor.withOpacity(0.3) : Colors.grey[800],
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(
-          color: isSelected ? activeColor : Colors.transparent,
-          width: 2,
-        ),
-      ),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          onTap: onTap,
-          borderRadius: BorderRadius.circular(10),
-          child: Container(
-            padding: const EdgeInsets.symmetric(vertical: 16),
-            alignment: Alignment.center,
-            child: Column(
-              children: [
-                Icon(
-                  icon,
-                  color: isSelected ? activeColor : Colors.white70,
-                  size: 28,
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  label,
-                  style: TextStyle(
-                    color: isSelected ? activeColor : Colors.white,
-                    fontSize: 15,
-                    fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildExitDialogCancelButton() {
-    final isSelected = _exitDialogSelectedIndex == 2;
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: () => setState(() => _showExitDialog = false),
-        borderRadius: BorderRadius.circular(8),
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 24),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(
-              color: isSelected ? Colors.white54 : Colors.transparent,
-              width: 1,
-            ),
-          ),
-          child: Text(
-            '取消',
-            style: TextStyle(
-              color: isSelected ? Colors.white : Colors.white54,
-              fontSize: 14,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-  // ======================================
-
-  @override
-  Widget build(BuildContext context) {
-    final screenHeight = MediaQuery.of(context).size.height;
-    _scheduleButtonInitTop = (screenHeight - 80) / 2;
-    _channelButtonInitTop = (screenHeight - 80) / 2;
-
-    if (currentChannel != null && channels.isNotEmpty) {
-      final idx = channels.indexOf(currentChannel!);
-      if (idx != _selectedIndex && idx >= 0) {
-        _selectedIndex = idx;
-      }
-    }
-
-    // 母版原样：RawKeyboardListener 包裹 Scaffold
-    return RawKeyboardListener(
-      focusNode: _focusNode,
-      onKey: _handleKeyEvent,
-      child: Scaffold(
-        body: Stack(
-          children: [
-            // 1. 母版原样：播放器
-            if (currentChannel != null && currentChannel!.url.isNotEmpty)
-              Positioned.fill(
-                child: IjkPlayerWidget(
-                  key: _playerKey,
-                  url: currentChannel!.url,
-                  decoderIndex: Provider.of<SettingsService>(context, listen: false).decoderIndex,
-                  onError: _scheduleRetry,
-                  onSpeedUpdate: (speed) {
-                    if (mounted) setState(() => currentSpeed = speed);
-                  },
-                ),
-              ),
-
-            // 2. 母版原样：点击显示EPG
-            if (!_showEpgInfo)
-              Positioned.fill(
-                child: GestureDetector(
-                  behavior: HitTestBehavior.translucent,
-                  onTap: () {
-                    _showEpgInfoTemporarily();
-                  },
-                ),
-              ),
-
-            // 3. 母版原样：左侧滑出栏
-            Positioned(
-              left: 0, top: 0, bottom: 0, width: 40,
-              child: GestureDetector(
-                behavior: HitTestBehavior.translucent,
-                onTap: () {
-                  setState(() {
-                    if (isScheduleMode) {
-                      isScheduleMode = false;
-                      showChannelList = true;
-                    } else {
-                      showChannelList = !showChannelList;
-                    }
-                    if (showChannelList) {
-                      _showRightMenu = false;
-                      _showEpgInfo = false;
-                      _epgInfoHideTimer?.cancel();
-                    }
-                  });
-                },
-                child: Container(color: Colors.transparent),
-              ),
-            ),
-
-            // 4. 母版原样：频道列表
-            if (showChannelList && !isScheduleMode)
-              Positioned(
-                left: 0, top: 0, bottom: 0,
-                width: MediaQuery.of(context).size.width * 0.7,
-                child: Container(
-                  color: Colors.transparent,
-                  child: Row(
-                    children: [
-                      Expanded(flex: (subWeight * 100).toInt(), child: _buildSubscriptionList()),
-                      _buildDragBar(onDrag: (delta) {
-                        setState(() {
-                          double newSub = subWeight + delta;
-                          double newGroup = groupWeight - delta;
-                          if (newSub < 0.05) newSub = 0.05;
-                          if (newGroup < 0.05) newGroup = 0.05;
-                          subWeight = newSub;
-                          groupWeight = newGroup;
-                          channelWeight = 1 - subWeight - groupWeight;
-                          if (channelWeight < 0.05) {
-                            channelWeight = 0.05;
-                            final total = subWeight + groupWeight;
-                            subWeight = subWeight / total * 0.95;
-                            groupWeight = groupWeight / total * 0.95;
-                          }
-                        });
-                      }, isEditMode: isEditMode),
-                      Expanded(flex: (groupWeight * 100).toInt(), child: _buildGroupList()),
-                      _buildDragBar(onDrag: (delta) {
-                        setState(() {
-                          double newGroup = groupWeight + delta;
-                          double newChannel = channelWeight - delta;
-                          if (newGroup < 0.05) newGroup = 0.05;
-                          if (newChannel < 0.05) newChannel = 0.05;
-                          groupWeight = newGroup;
-                          channelWeight = newChannel;
-                          subWeight = 1 - groupWeight - channelWeight;
-                          if (subWeight < 0.05) {
-                            subWeight = 0.05;
-                            final total = groupWeight + channelWeight;
-                            groupWeight = groupWeight / total * 0.95;
-                            channelWeight = channelWeight / total * 0.95;
-                          }
-                        });
-                      }, isEditMode: isEditMode),
-                      Expanded(
-                        flex: (channelWeight * 100).toInt(),
-                        child: Stack(
-                          children: [
-                            Positioned.fill(
-                              child: ListView.builder(
-                                itemCount: channels.length,
-                                itemBuilder: (context, index) =>
-                                    _buildChannelItem(channels[index], index),
-                              ),
-                            ),
-                            Positioned(
-                              right: 20 - channelListButtonOffset.dx,
-                              top: _channelButtonInitTop + channelListButtonOffset.dy,
-                              child: GestureDetector(
-                                onPanUpdate: (details) {
-                                  if (!isEditMode) return;
-                                  setState(() => channelListButtonOffset += details.delta);
-                                },
-                                onTap: () => setState(() {
-                                  isScheduleMode = true;
-                                  showChannelList = false;
-                                }),
-                                child: Container(
-                                  width: 26, height: 80, color: Colors.transparent,
-                                  child: const Column(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      Text('节', style: TextStyle(color: Colors.white, fontSize: 13)),
-                                      Text('目', style: TextStyle(color: Colors.white, fontSize: 13)),
-                                      Text('单', style: TextStyle(color: Colors.white, fontSize: 13)),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-
-            // 5. 母版原样：节目单
-            if (isScheduleMode)
-              Positioned(
-                left: 0, top: 0, bottom: 0,
-                width: MediaQuery.of(context).size.width * 0.7,
-                child: Stack(
-                  children: [
-                    Row(
-                      children: [
-                        Expanded(flex: (scheduleGroupWeight * 100).toInt(), child: _buildGroupList()),
-                        _buildDragBar(onDrag: (delta) {
-                          setState(() {
-                            double newGroup = scheduleGroupWeight + delta;
-                            double newChannel = scheduleChannelWeight - delta;
-                            if (newGroup < 0.05) newGroup = 0.05;
-                            if (newChannel < 0.05) newChannel = 0.05;
-                            scheduleGroupWeight = newGroup;
-                            scheduleChannelWeight = newChannel;
-                            scheduleWeight = 1 - newGroup - newChannel;
-                            if (scheduleWeight < 0.05) {
-                              scheduleWeight = 0.05;
-                              final total = newGroup + newChannel;
-                              scheduleGroupWeight = scheduleGroupWeight / total * 0.95;
-                              scheduleChannelWeight = scheduleChannelWeight / total * 0.95;
-                            }
-                          });
-                        }, isEditMode: isEditMode),
-                        Expanded(
-                          flex: (scheduleChannelWeight * 100).toInt(),
-                          child: ListView.builder(
-                            itemCount: channels.length,
-                            itemBuilder: (context, index) =>
-                                _buildChannelItem(channels[index], index),
-                          ),
-                        ),
-                        _buildDragBar(onDrag: (delta) {
-                          setState(() {
-                            double newChannel = scheduleChannelWeight + delta;
-                            double newSchedule = scheduleWeight - delta;
-                            if (newChannel < 0.05) newChannel = 0.05;
-                            if (newSchedule < 0.05) newSchedule = 0.05;
-                            scheduleChannelWeight = newChannel;
-                            scheduleWeight = newSchedule;
-                            scheduleGroupWeight = 1 - newChannel - newSchedule;
-                            if (scheduleGroupWeight < 0.05) {
-                              scheduleGroupWeight = 0.05;
-                              final total = newChannel + newSchedule;
-                              scheduleChannelWeight = scheduleChannelWeight / total * 0.95;
-                              scheduleWeight = scheduleWeight / total * 0.95;
-                            }
-                          });
-                        }, isEditMode: isEditMode),
-                        Expanded(
-                          flex: (scheduleWeight * 100).toInt(),
-                          child: ScheduleView(
-                            channels: channels,
-                            selectedChannel: currentChannel,
-                            epgMap: const {},
-                            onSelectChannel: _switchChannel,
-                            leftWeight: 0.3,
-                            rightWeight: 0.7,
-                            onLeftWeightChanged: (_) {},
-                            isEditMode: isEditMode,
-                            showLeft: false,
-                            logoService: _logoService,
-                            getChannelPrograms: _getChannelPrograms,
-                            formatTime: _formatTime,
-                            beijingNow: _beijingNow,
-                          ),
-                        ),
-                      ],
-                    ),
-                    Positioned(
-                      left: 8 + scheduleModeButtonOffset.dx,
-                      top: _scheduleButtonInitTop + scheduleModeButtonOffset.dy,
-                      child: GestureDetector(
-                        onPanUpdate: (details) {
-                          if (!isEditMode) return;
-                          setState(() => scheduleModeButtonOffset += details.delta);
-                        },
-                        onTap: () => setState(() {
-                          isScheduleMode = false;
-                          showChannelList = true;
-                        }),
-                        child: Container(
-                          width: 26, height: 80, color: Colors.transparent,
-                          child: const Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Text('频', style: TextStyle(color: Colors.white, fontSize: 13)),
-                              Text('道', style: TextStyle(color: Colors.white, fontSize: 13)),
-                              Text('组', style: TextStyle(color: Colors.white, fontSize: 13)),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-
-            // 6. 母版原样：EPG信息栏
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 0,
-              child: _buildEpgInfoBar(),
-            ),
-
-            // 7. 母版原样：右侧菜单
-            if (_showRightMenu)
-              Positioned(
-                top: 0, right: 0, bottom: 0,
-                width: MediaQuery.of(context).size.width * 0.12,
-                child: Container(
-                  color: Colors.transparent,
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      _buildMenuItem(Icons.settings, '设置', () {
-                        Navigator.push(context, MaterialPageRoute(builder: (_) => SettingsScreen()))
-                            .then((_) => setState(() {}));
-                        setState(() => _showRightMenu = false);
-                      }),
-                      _buildMenuItem(Icons.edit, '编辑', () {
-                        if (isEditMode) {
-                          _exitEditMode();
-                        } else {
-                          setState(() => isEditMode = true);
-                        }
-                        setState(() => _showRightMenu = false);
-                      }),
-                      _buildMenuItem(Icons.list, '列表订阅', () {
-                        _showAddSubscriptionDialog();
-                        setState(() => _showRightMenu = false);
-                      }),
-                      _buildMenuItem(Icons.tv, 'EPG订阅', () {
-                        _showAddEpgDialog();
-                        setState(() => _showRightMenu = false);
-                      }),
-                      _buildMenuItem(Icons.close, '关闭', () {
-                        setState(() => _showRightMenu = false);
-                      }),
-                    ],
-                  ),
-                ),
-              ),
-
-            // 8. 母版原样：右上角按钮
-            Positioned(
-              top: 0, right: 0,
-              child: Row(
-                children: [
-                  IconButton(
-                    icon: const Icon(Icons.edit, color: Colors.white),
-                    onPressed: () {
-                      if (isEditMode) {
-                        _exitEditMode();
-                      } else {
-                        setState(() => isEditMode = true);
-                      }
-                    },
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.settings, color: Colors.white),
-                    onPressed: () => Navigator.push(
-                      context, MaterialPageRoute(builder: (_) => SettingsScreen()),
-                    ).then((_) => setState(() {})),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.menu, color: Colors.white),
-                    onPressed: () => setState(() => _showRightMenu = !_showRightMenu),
-                  ),
-                ],
-              ),
-            ),
-
-            // 9. 新增：数字键输入显示
-            if (_channelNumberInput.isNotEmpty)
-              Positioned(
-                top: MediaQuery.of(context).size.height * 0.25,
-                left: 0,
-                right: 0,
-                child: Center(
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
-                    decoration: BoxDecoration(
-                      color: Colors.black.withOpacity(0.75),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: Colors.white.withOpacity(0.2)),
-                    ),
-                    child: Text(
-                      _channelNumberInput,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 56,
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: 4,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-
-            // 10. 新增：退出对话框（Stack最上层）
-            _buildExitDialog(),
-          ],
-        ),
-      ),
+      tileColor: isSelected ? Colors.white.withOpacity(0.15) : Colors.transparent,
+      onTap: onTap,
     );
   }
 
@@ -1440,14 +935,6 @@ class _HomeScreenState extends State<HomeScreen> {
         onDrag(details.delta.dx / width);
       },
       child: Container(width: 8, color: Colors.white24),
-    );
-  }
-
-  Widget _buildMenuItem(IconData icon, String label, VoidCallback onTap) {
-    return ListTile(
-      leading: Icon(icon, color: Colors.white),
-      title: Text(label, style: const TextStyle(color: Colors.white)),
-      onTap: onTap,
     );
   }
 
@@ -1486,11 +973,402 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _showAddSubscriptionDialog() {}
-
   void _showAddEpgDialog() {
     Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => SettingsScreen()),
     ).then((_) => setState(() {}));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final screenHeight = MediaQuery.of(context).size.height;
+    _scheduleButtonInitTop = (screenHeight - 80) / 2;
+    _channelButtonInitTop = (screenHeight - 80) / 2;
+
+    if (currentChannel != null && channels.isNotEmpty) {
+      final idx = channels.indexOf(currentChannel!);
+      if (idx != _selectedIndex && idx >= 0) {
+        _selectedIndex = idx;
+      }
+    }
+
+    return RawKeyboardListener(
+      focusNode: _focusNode,
+      onKey: _handleKeyEvent,
+      child: WillPopScope(
+        onWillPop: () async {
+          if (_showEpgInfo) {
+            setState(() => _showEpgInfo = false);
+            _epgInfoHideTimer?.cancel();
+            return false;
+          }
+          if (isScheduleMode) {
+            setState(() => isScheduleMode = false);
+            return false;
+          }
+          if (showChannelList) {
+            setState(() {
+              showChannelList = false;
+              _focusArea = 'none';
+            });
+            return false;
+          }
+          if (_showRightMenu) {
+            setState(() {
+              _showRightMenu = false;
+              _focusArea = 'none';
+            });
+            return false;
+          }
+          if (_showExitMenu) {
+            setState(() {
+              _showExitMenu = false;
+              _focusArea = 'none';
+            });
+            return false;
+          }
+          // 无窗口状态下按返回，弹出退出菜单
+          setState(() {
+            _showExitMenu = true;
+            _exitMenuSelectedIndex = 0;
+            _focusArea = 'exitMenu';
+          });
+          return false;
+        },
+        child: Scaffold(
+          body: Stack(
+            children: [
+              if (currentChannel != null && currentChannel!.url.isNotEmpty)
+                Positioned.fill(
+                  child: IjkPlayerWidget(
+                    key: _playerKey,
+                    url: currentChannel!.url,
+                    decoderIndex: Provider.of<SettingsService>(context, listen: false).decoderIndex,
+                    onError: _scheduleRetry,
+                    onSpeedUpdate: (speed) {
+                      if (mounted) setState(() => currentSpeed = speed);
+                    },
+                  ),
+                ),
+
+              if (!_showEpgInfo)
+                Positioned.fill(
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.translucent,
+                    onTap: () {
+                      _showEpgInfoTemporarily();
+                    },
+                  ),
+                ),
+
+              Positioned(
+                left: 0, top: 0, bottom: 0, width: 40,
+                child: GestureDetector(
+                  behavior: HitTestBehavior.translucent,
+                  onTap: () {
+                    setState(() {
+                      if (isScheduleMode) {
+                        isScheduleMode = false;
+                        showChannelList = true;
+                      } else {
+                        showChannelList = !showChannelList;
+                      }
+                      if (showChannelList) {
+                        _showRightMenu = false;
+                        _showEpgInfo = false;
+                        _epgInfoHideTimer?.cancel();
+                        _focusNode.requestFocus();
+                      }
+                    });
+                  },
+                  child: Container(color: Colors.transparent),
+                ),
+              ),
+
+              if (showChannelList && !isScheduleMode)
+                Positioned(
+                  left: 0, top: 0, bottom: 0,
+                  width: MediaQuery.of(context).size.width * 0.7,
+                  child: Container(
+                    color: Colors.transparent,
+                    child: Row(
+                      children: [
+                        Expanded(flex: (subWeight * 100).toInt(), child: _buildSubscriptionList()),
+                        _buildDragBar(onDrag: (delta) {
+                          setState(() {
+                            double newSub = subWeight + delta;
+                            double newGroup = groupWeight - delta;
+                            if (newSub < 0.05) newSub = 0.05;
+                            if (newGroup < 0.05) newGroup = 0.05;
+                            subWeight = newSub;
+                            groupWeight = newGroup;
+                            channelWeight = 1 - subWeight - groupWeight;
+                            if (channelWeight < 0.05) {
+                              channelWeight = 0.05;
+                              final total = subWeight + groupWeight;
+                              subWeight = subWeight / total * 0.95;
+                              groupWeight = groupWeight / total * 0.95;
+                            }
+                          });
+                        }, isEditMode: isEditMode),
+                        Expanded(flex: (groupWeight * 100).toInt(), child: _buildGroupList()),
+                        _buildDragBar(onDrag: (delta) {
+                          setState(() {
+                            double newGroup = groupWeight + delta;
+                            double newChannel = channelWeight - delta;
+                            if (newGroup < 0.05) newGroup = 0.05;
+                            if (newChannel < 0.05) newChannel = 0.05;
+                            groupWeight = newGroup;
+                            channelWeight = newChannel;
+                            subWeight = 1 - groupWeight - channelWeight;
+                            if (subWeight < 0.05) {
+                              subWeight = 0.05;
+                              final total = groupWeight + channelWeight;
+                              groupWeight = groupWeight / total * 0.95;
+                              channelWeight = channelWeight / total * 0.95;
+                            }
+                          });
+                        }, isEditMode: isEditMode),
+                        Expanded(
+                          flex: (channelWeight * 100).toInt(),
+                          child: Stack(
+                            children: [
+                              Positioned.fill(
+                                child: ListView.builder(
+                                  itemCount: channels.length,
+                                  itemBuilder: (context, index) =>
+                                      _buildChannelItem(channels[index], index),
+                                ),
+                              ),
+                              Positioned(
+                                right: 20 - channelListButtonOffset.dx,
+                                top: _channelButtonInitTop + channelListButtonOffset.dy,
+                                child: GestureDetector(
+                                  onPanUpdate: (details) {
+                                    if (!isEditMode) return;
+                                    setState(() => channelListButtonOffset += details.delta);
+                                  },
+                                  onTap: () => setState(() {
+                                    isScheduleMode = true;
+                                    showChannelList = false;
+                                  }),
+                                  child: Container(
+                                    width: 26, height: 80, color: Colors.transparent,
+                                    child: const Column(
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      children: [
+                                        Text('节', style: TextStyle(color: Colors.white, fontSize: 13)),
+                                        Text('目', style: TextStyle(color: Colors.white, fontSize: 13)),
+                                        Text('单', style: TextStyle(color: Colors.white, fontSize: 13)),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+
+              if (isScheduleMode)
+                Positioned(
+                  left: 0, top: 0, bottom: 0,
+                  width: MediaQuery.of(context).size.width * 0.7,
+                  child: Stack(
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(flex: (scheduleGroupWeight * 100).toInt(), child: _buildGroupList()),
+                          _buildDragBar(onDrag: (delta) {
+                            setState(() {
+                              double newGroup = scheduleGroupWeight + delta;
+                              double newChannel = scheduleChannelWeight - delta;
+                              if (newGroup < 0.05) newGroup = 0.05;
+                              if (newChannel < 0.05) newChannel = 0.05;
+                              scheduleGroupWeight = newGroup;
+                              scheduleChannelWeight = newChannel;
+                              scheduleWeight = 1 - newGroup - newChannel;
+                              if (scheduleWeight < 0.05) {
+                                scheduleWeight = 0.05;
+                                final total = newGroup + newChannel;
+                                scheduleGroupWeight = scheduleGroupWeight / total * 0.95;
+                                scheduleChannelWeight = scheduleChannelWeight / total * 0.95;
+                              }
+                            });
+                          }, isEditMode: isEditMode),
+                          Expanded(
+                            flex: (scheduleChannelWeight * 100).toInt(),
+                            child: ListView.builder(
+                              itemCount: channels.length,
+                              itemBuilder: (context, index) =>
+                                  _buildChannelItem(channels[index], index),
+                            ),
+                          ),
+                          _buildDragBar(onDrag: (delta) {
+                            setState(() {
+                              double newChannel = scheduleChannelWeight + delta;
+                              double newSchedule = scheduleWeight - delta;
+                              if (newChannel < 0.05) newChannel = 0.05;
+                              if (newSchedule < 0.05) newSchedule = 0.05;
+                              scheduleChannelWeight = newChannel;
+                              scheduleWeight = newSchedule;
+                              scheduleGroupWeight = 1 - newChannel - newSchedule;
+                              if (scheduleGroupWeight < 0.05) {
+                                scheduleGroupWeight = 0.05;
+                                final total = newChannel + newSchedule;
+                                scheduleChannelWeight = scheduleChannelWeight / total * 0.95;
+                                scheduleWeight = scheduleWeight / total * 0.95;
+                              }
+                            });
+                          }, isEditMode: isEditMode),
+                          Expanded(
+                            flex: (scheduleWeight * 100).toInt(),
+                            child: ScheduleView(
+                              channels: channels,
+                              selectedChannel: currentChannel,
+                              epgMap: const {},
+                              onSelectChannel: _switchChannel,
+                              leftWeight: 0.3,
+                              rightWeight: 0.7,
+                              onLeftWeightChanged: (_) {},
+                              isEditMode: isEditMode,
+                              showLeft: false,
+                              logoService: _logoService,
+                              getChannelPrograms: _getChannelPrograms,
+                              formatTime: _formatTime,
+                              beijingNow: _beijingNow,
+                            ),
+                          ),
+                        ],
+                      ),
+                      Positioned(
+                        left: 8 + scheduleModeButtonOffset.dx,
+                        top: _scheduleButtonInitTop + scheduleModeButtonOffset.dy,
+                        child: GestureDetector(
+                          onPanUpdate: (details) {
+                            if (!isEditMode) return;
+                            setState(() => scheduleModeButtonOffset += details.delta);
+                          },
+                          onTap: () => setState(() {
+                            isScheduleMode = false;
+                            showChannelList = true;
+                          }),
+                          child: Container(
+                            width: 26, height: 80, color: Colors.transparent,
+                            child: const Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Text('频', style: TextStyle(color: Colors.white, fontSize: 13)),
+                                Text('道', style: TextStyle(color: Colors.white, fontSize: 13)),
+                                Text('组', style: TextStyle(color: Colors.white, fontSize: 13)),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: _buildEpgInfoBar(),
+              ),
+
+              // 右侧菜单
+              if (_showRightMenu)
+                Positioned(
+                  top: 0, right: 0, bottom: 0,
+                  width: MediaQuery.of(context).size.width * 0.12,
+                  child: Container(
+                    color: Colors.transparent,
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        _buildMenuItem(Icons.settings, '设置', () {
+                          Navigator.push(context, MaterialPageRoute(builder: (_) => SettingsScreen()))
+                              .then((_) => setState(() {}));
+                          setState(() => _showRightMenu = false);
+                        }, 0),
+                        _buildMenuItem(Icons.edit, '编辑', () {
+                          if (isEditMode) {
+                            _exitEditMode();
+                          } else {
+                            setState(() => isEditMode = true);
+                          }
+                          setState(() => _showRightMenu = false);
+                        }, 1),
+                        _buildMenuItem(Icons.list, '列表订阅', () {
+                          _showAddSubscriptionDialog();
+                          setState(() => _showRightMenu = false);
+                        }, 2),
+                        _buildMenuItem(Icons.tv, 'EPG订阅', () {
+                          _showAddEpgDialog();
+                          setState(() => _showRightMenu = false);
+                        }, 3),
+                        _buildMenuItem(Icons.close, '关闭', () {
+                          setState(() => _showRightMenu = false);
+                        }, 4),
+                      ],
+                    ),
+                  ),
+                ),
+
+              // 退出菜单
+              if (_showExitMenu)
+                Positioned.fill(
+                  child: ExitMenu(
+                    onSettings: () {
+                      setState(() => _showExitMenu = false);
+                      Navigator.push(context, MaterialPageRoute(builder: (_) => SettingsScreen()))
+                          .then((_) => setState(() {}));
+                    },
+                    onExit: () => exit(0),
+                    onDismiss: () => setState(() {
+                      _showExitMenu = false;
+                      _focusArea = 'none';
+                    }),
+                  ),
+                ),
+
+              // 顶部工具栏
+              Positioned(
+                top: 0, right: 0,
+                child: Row(
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.edit, color: Colors.white),
+                      onPressed: () {
+                        if (isEditMode) {
+                          _exitEditMode();
+                        } else {
+                          setState(() => isEditMode = true);
+                        }
+                      },
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.settings, color: Colors.white),
+                      onPressed: () => Navigator.push(
+                        context, MaterialPageRoute(builder: (_) => SettingsScreen()),
+                      ).then((_) => setState(() {})),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.menu, color: Colors.white),
+                      onPressed: () => setState(() => _showRightMenu = !_showRightMenu),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
