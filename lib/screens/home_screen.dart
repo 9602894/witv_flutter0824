@@ -86,8 +86,8 @@ class _HomeScreenState extends State<HomeScreen> {
   String _digitDisplay = '';
   Timer? _digitHideTimer;
 
-  // ---------- 新焦点控制 ----------
-  int _focusColumn = 2; // 0=订阅源, 1=分组, 2=频道
+  // 焦点列：0=订阅源，1=分组，2=频道
+  int _focusColumn = 2;
 
   DateTime get _beijingNow => EpgParser.beijingNow;
   String _formatTime(DateTime time) => EpgParser.formatBeijingTime(time);
@@ -333,7 +333,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _retryChannel = null;
   }
 
-  // ======================== 频道 / 分组 / 订阅源切换 ========================
+  // ======================== 频道 / 分组 / 订阅源切换（播放） ========================
   void _switchChannel(Channel ch) {
     _cancelRetry();
     _digitBuffer = '';
@@ -350,7 +350,8 @@ class _HomeScreenState extends State<HomeScreen> {
     Provider.of<SettingsService>(context, listen: false).saveLastChannel(ch.name);
   }
 
-  void _switchToGroup(String groupName) {
+  /// 切换分组并播放该分组第一个频道（用于OK键确认）
+  void _switchToGroupAndPlay(String groupName) {
     if (_fullGroupMap == null || _fullGroupMap!.isEmpty) return;
     final groupChannels = _fullGroupMap![groupName];
     if (groupChannels == null || groupChannels.isEmpty) return;
@@ -381,6 +382,30 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  /// 只切换分组，不改变当前播放频道（用于上下键预览）
+  void _switchToGroupOnly(String groupName) {
+    if (_fullGroupMap == null || _fullGroupMap!.isEmpty) return;
+    final groupChannels = _fullGroupMap![groupName];
+    if (groupChannels == null || groupChannels.isEmpty) return;
+
+    setState(() {
+      currentGroup = groupName;
+      channels = groupChannels;
+      // 保持当前频道不变，如果当前频道不在新列表中，则清空选中（但保留播放）
+      if (currentChannel != null && !channels.contains(currentChannel)) {
+        _selectedIndex = -1;
+      } else if (currentChannel != null) {
+        _selectedIndex = channels.indexOf(currentChannel!);
+      } else {
+        _selectedIndex = -1;
+      }
+    });
+
+    _logoService.preloadAllLogos(channels);
+    _tryDownloadLogos();
+  }
+
+  // ======================== 订阅源加载 ========================
   Future<void> _loadSubscriptionData(Subscription sub) async {
     try {
       final url = sub.url;
@@ -391,7 +416,7 @@ class _HomeScreenState extends State<HomeScreen> {
           final content = await cacheFile.readAsString();
           final groupMap = PlaylistParser.parseFromString(content);
           if (groupMap.isNotEmpty) {
-            _applyGroupMap(groupMap, sub.name);
+            _applyGroupMapOnly(groupMap, sub.name, switchChannel: false);
           }
         } catch (e) {
           LogService.write('缓存解析失败: $e');
@@ -402,7 +427,7 @@ class _HomeScreenState extends State<HomeScreen> {
         final groupMap = await PlaylistParser.parseFromUrl(url);
         if (groupMap.isNotEmpty) {
           await PlaylistParser.saveCache(groupMap, url, sub.name);
-          _applyGroupMap(groupMap, sub.name);
+          _applyGroupMapOnly(groupMap, sub.name, switchChannel: false);
         } else {
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
@@ -424,7 +449,7 @@ class _HomeScreenState extends State<HomeScreen> {
               if (oldCount != newCount || newMap.keys.length != groups.length) {
                 await PlaylistParser.saveCache(newMap, url, sub.name);
                 if (mounted && currentSubName == sub.name) {
-                  _applyGroupMap(newMap, sub.name);
+                  _applyGroupMapOnly(newMap, sub.name, switchChannel: false);
                 }
               }
             }
@@ -440,7 +465,8 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  void _applyGroupMap(Map<String, List<Channel>> groupMap, String subName) {
+  /// 应用订阅源数据，可选是否立即切换频道
+  void _applyGroupMapOnly(Map<String, List<Channel>> groupMap, String subName, {bool switchChannel = true}) {
     if (groupMap.isEmpty) return;
 
     final m3uLogos = <String, String>{};
@@ -463,33 +489,42 @@ class _HomeScreenState extends State<HomeScreen> {
         final groupChannels = groupMap[currentGroup];
         if (groupChannels != null && groupChannels.isNotEmpty) {
           channels = groupChannels;
-          if (currentChannel == null && channels.isNotEmpty) {
-            final lastChannel = Provider.of<SettingsService>(context, listen: false).getLastChannel();
-            if (lastChannel != null) {
-              Channel? found;
-              for (final list in groupMap.values) {
-                try {
-                  found = list.firstWhere((ch) => ch.name == lastChannel);
-                  break;
-                } catch (_) {}
-              }
-              if (found != null) {
-                currentChannel = found;
-                _selectedIndex = channels.indexOf(found);
+          if (switchChannel) {
+            if (currentChannel == null && channels.isNotEmpty) {
+              final lastChannel = Provider.of<SettingsService>(context, listen: false).getLastChannel();
+              if (lastChannel != null) {
+                Channel? found;
+                for (final list in groupMap.values) {
+                  try {
+                    found = list.firstWhere((ch) => ch.name == lastChannel);
+                    break;
+                  } catch (_) {}
+                }
+                if (found != null) {
+                  currentChannel = found;
+                  _selectedIndex = channels.indexOf(found);
+                } else {
+                  currentChannel = channels.first;
+                  _selectedIndex = 0;
+                }
               } else {
                 currentChannel = channels.first;
                 _selectedIndex = 0;
               }
+              _showEpgInfoTemporarily();
+              _updateEpgInfo();
+            } else if (currentChannel != null && channels.contains(currentChannel)) {
+              _selectedIndex = channels.indexOf(currentChannel!);
             } else {
-              currentChannel = channels.first;
-              _selectedIndex = 0;
+              _selectedIndex = -1;
             }
-            _showEpgInfoTemporarily();
-            _updateEpgInfo();
-          } else if (currentChannel != null && channels.contains(currentChannel)) {
-            _selectedIndex = channels.indexOf(currentChannel!);
           } else {
-            _selectedIndex = -1;
+            // 不切换频道，只更新列表，保持 currentChannel 不变
+            if (currentChannel != null && channels.contains(currentChannel)) {
+              _selectedIndex = channels.indexOf(currentChannel!);
+            } else {
+              _selectedIndex = -1;
+            }
           }
         } else {
           for (final g in groups) {
@@ -505,7 +540,7 @@ class _HomeScreenState extends State<HomeScreen> {
       currentSubName = subName;
     });
 
-    if (currentChannel != null) {
+    if (switchChannel && currentChannel != null) {
       _updateEpgInfo();
     }
     _tryDownloadLogos();
@@ -600,7 +635,7 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    // ---------- 频道列表模式（三列自由移动） ----------
+    // ---------- 频道列表模式（三列自由移动，OK确认才切换） ----------
     if (showChannelList && !isScheduleMode) {
       // 左右切换焦点列
       if (isLeft) {
@@ -615,7 +650,7 @@ class _HomeScreenState extends State<HomeScreen> {
         return;
       }
 
-      // 上下键根据焦点列执行操作
+      // 上下键：只移动高亮，不切换频道（频道列也不自动切换）
       if (isUp) {
         switch (_focusColumn) {
           case 0: // 订阅源列
@@ -625,7 +660,7 @@ class _HomeScreenState extends State<HomeScreen> {
             _moveGroup(-1);
             break;
           case 2: // 频道列
-            _moveChannel(-1);
+            _moveChannelOnly(-1);  // 只移动高亮
             break;
         }
         return;
@@ -638,14 +673,32 @@ class _HomeScreenState extends State<HomeScreen> {
             _moveGroup(1);
             break;
           case 2:
-            _moveChannel(1);
+            _moveChannelOnly(1);
             break;
         }
         return;
       }
 
-      // OK 键退出列表（或可保留其他功能）
-      if (isOk || isBack || isMenu) {
+      // OK 键：根据焦点列执行确认操作（切换播放）
+      if (isOk) {
+        switch (_focusColumn) {
+          case 0: // 订阅源确认：加载并切换到第一个频道
+            _confirmSubscription();
+            break;
+          case 1: // 分组确认：切换到该分组并播放第一个频道
+            _confirmGroup();
+            break;
+          case 2: // 频道确认：播放选中频道
+            if (_selectedIndex >= 0 && _selectedIndex < channels.length) {
+              _switchChannel(channels[_selectedIndex]);
+            }
+            break;
+        }
+        return;
+      }
+
+      // 返回/菜单键关闭列表
+      if (isBack || isMenu) {
         setState(() => showChannelList = false);
       }
       return;
@@ -654,7 +707,6 @@ class _HomeScreenState extends State<HomeScreen> {
     // ---------- 节目单模式 ----------
     if (isScheduleMode) {
       if (isBack) setState(() => isScheduleMode = false);
-      // 如需支持左右滚动节目单，可在此扩展
       return;
     }
 
@@ -666,13 +718,12 @@ class _HomeScreenState extends State<HomeScreen> {
         _showRightMenu = false;
         _showEpgInfo = false;
         _epgInfoHideTimer?.cancel();
-        // 默认焦点在频道列
         _focusColumn = 2;
       });
     } else if (isBack) {
       setState(() { _showExitMenu = true; _exitMenuSelectedIndex = 0; });
     } else if (isUp) {
-      // 切换上一个频道，边界跳转分组
+      // 全屏时上下键直接切换频道（保留快速换台）
       _moveChannel(-1);
     } else if (isDown) {
       _moveChannel(1);
@@ -680,7 +731,7 @@ class _HomeScreenState extends State<HomeScreen> {
     // 左右键无操作
   }
 
-  // ---------- 移动辅助方法 ----------
+  // ---------- 移动辅助方法（只移动高亮，不切换播放） ----------
   void _moveSubscription(int direction) {
     final settings = Provider.of<SettingsService>(context, listen: false);
     final subs = settings.subscriptions;
@@ -689,7 +740,8 @@ class _HomeScreenState extends State<HomeScreen> {
     if (currentIdx == -1) currentIdx = 0;
     int newIdx = (currentIdx + direction) % subs.length;
     if (newIdx < 0) newIdx += subs.length;
-    _loadSubscriptionData(subs[newIdx]);
+    // 只加载数据，不切换频道
+    _loadSubscriptionDataOnly(subs[newIdx]);
   }
 
   void _moveGroup(int direction) {
@@ -698,27 +750,131 @@ class _HomeScreenState extends State<HomeScreen> {
     if (currentIdx == -1) currentIdx = 0;
     int newIdx = (currentIdx + direction) % groups.length;
     if (newIdx < 0) newIdx += groups.length;
-    _switchToGroup(groups[newIdx]);
+    // 只更新分组和频道列表，不切换频道
+    _switchToGroupOnly(groups[newIdx]);
   }
 
+  void _moveChannelOnly(int direction) {
+    if (channels.isEmpty) return;
+    int newIdx = _selectedIndex + direction;
+    if (newIdx >= 0 && newIdx < channels.length) {
+      setState(() => _selectedIndex = newIdx);
+    } else {
+      // 边界：切换分组（但不自动换台），并将高亮置于首/尾
+      if (groups.isNotEmpty) {
+        int currentGroupIdx = groups.indexOf(currentGroup!);
+        int newGroupIdx = (currentGroupIdx + direction) % groups.length;
+        if (newGroupIdx < 0) newGroupIdx += groups.length;
+        _switchToGroupOnly(groups[newGroupIdx]);
+        // 选中目标组的首或尾
+        if (channels.isNotEmpty) {
+          int targetIdx = direction > 0 ? 0 : channels.length - 1;
+          setState(() => _selectedIndex = targetIdx);
+        }
+      }
+    }
+  }
+
+  // 全屏时上下键直接切换频道（并处理边界切换分组）
   void _moveChannel(int direction) {
     if (channels.isEmpty) return;
     int newIdx = _selectedIndex + direction;
     if (newIdx >= 0 && newIdx < channels.length) {
       _switchChannel(channels[newIdx]);
     } else {
-      // 边界：切换分组
       if (groups.isNotEmpty) {
         int currentGroupIdx = groups.indexOf(currentGroup!);
         int newGroupIdx = (currentGroupIdx + direction) % groups.length;
         if (newGroupIdx < 0) newGroupIdx += groups.length;
-        _switchToGroup(groups[newGroupIdx]);
-        // 切换到目标组的首或尾
+        _switchToGroupAndPlay(groups[newGroupIdx]);
         if (channels.isNotEmpty) {
           int targetIdx = direction > 0 ? 0 : channels.length - 1;
           _switchChannel(channels[targetIdx]);
         }
       }
+    }
+  }
+
+  // ---------- 确认操作（OK键） ----------
+  void _confirmGroup() {
+    if (currentGroup != null && groups.contains(currentGroup)) {
+      _switchToGroupAndPlay(currentGroup!);
+    }
+  }
+
+  void _confirmSubscription() {
+    final settings = Provider.of<SettingsService>(context, listen: false);
+    final subs = settings.subscriptions;
+    if (subs.isEmpty) return;
+    Subscription? target;
+    for (var s in subs) {
+      if (s.name == currentSubName) {
+        target = s;
+        break;
+      }
+    }
+    if (target == null) target = subs.first;
+    _loadSubscriptionDataAndPlay(target);
+  }
+
+  // ---------- 专门用于预览的加载（不切换频道） ----------
+  Future<void> _loadSubscriptionDataOnly(Subscription sub) async {
+    try {
+      final url = sub.url;
+      final cacheFile = await PlaylistParser.getCacheFile(url, sub.name);
+
+      if (await cacheFile.exists()) {
+        try {
+          final content = await cacheFile.readAsString();
+          final groupMap = PlaylistParser.parseFromString(content);
+          if (groupMap.isNotEmpty) {
+            _applyGroupMapOnly(groupMap, sub.name, switchChannel: false);
+          }
+        } catch (e) {
+          LogService.write('缓存解析失败: $e');
+        }
+      } else {
+        final groupMap = await PlaylistParser.parseFromUrl(url);
+        if (groupMap.isNotEmpty) {
+          await PlaylistParser.saveCache(groupMap, url, sub.name);
+          _applyGroupMapOnly(groupMap, sub.name, switchChannel: false);
+        }
+      }
+    } catch (e, stack) {
+      LogService.writeCrashLog('加载订阅源异常: $e', stack);
+    }
+  }
+
+  Future<void> _loadSubscriptionDataAndPlay(Subscription sub) async {
+    try {
+      final url = sub.url;
+      final cacheFile = await PlaylistParser.getCacheFile(url, sub.name);
+
+      if (await cacheFile.exists()) {
+        try {
+          final content = await cacheFile.readAsString();
+          final groupMap = PlaylistParser.parseFromString(content);
+          if (groupMap.isNotEmpty) {
+            _applyGroupMapOnly(groupMap, sub.name, switchChannel: true);
+          }
+        } catch (e) {
+          LogService.write('缓存解析失败: $e');
+        }
+      } else {
+        final groupMap = await PlaylistParser.parseFromUrl(url);
+        if (groupMap.isNotEmpty) {
+          await PlaylistParser.saveCache(groupMap, url, sub.name);
+          _applyGroupMapOnly(groupMap, sub.name, switchChannel: true);
+        } else {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('订阅源加载失败')),
+            );
+          }
+        }
+      }
+    } catch (e, stack) {
+      LogService.writeCrashLog('加载订阅源异常: $e', stack);
     }
   }
 
@@ -988,7 +1144,6 @@ class _HomeScreenState extends State<HomeScreen> {
                         _showEpgInfo = false;
                         _epgInfoHideTimer?.cancel();
                         _focusNode.requestFocus();
-                        // 默认焦点在频道列
                         _focusColumn = 2;
                       }
                     });
@@ -1369,7 +1524,7 @@ class _HomeScreenState extends State<HomeScreen> {
       child: GroupList(
         groups: groups,
         selectedGroup: currentGroup,
-        onSelect: _switchToGroup,
+        onSelect: _switchToGroupOnly, // 点击也只切换分组不换台
       ),
     );
   }
@@ -1433,7 +1588,7 @@ class _HomeScreenState extends State<HomeScreen> {
     return GroupList(
       groups: groups,
       selectedGroup: currentGroup,
-      onSelect: _switchToGroup,
+      onSelect: _switchToGroupAndPlay, // 节目单中点击分组直接换台
     );
   }
 
