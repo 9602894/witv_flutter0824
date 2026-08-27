@@ -1,4 +1,4 @@
-package com.example.witv_flutter
+package com.whyun.witv
 
 import android.content.Context
 import android.view.SurfaceView
