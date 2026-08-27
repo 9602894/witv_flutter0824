@@ -24,12 +24,12 @@ class IjkPlayerView(context: Context, private val url: String, private val decod
             setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "probesize", 1024 * 1024L)
             setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "analyzeduration", 1000 * 1000L)
 
-            // 解码器配置
+            // 解码器配置（硬解默认启用）
             if (decoderIndex == 0) {
                 Log.i("IJKPlayer", "启用硬解码")
                 setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec", 1L)
-                setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-avc", 1L)
-                setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-hevc", 1L)
+                setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-avc", 1L)   // H.264
+                setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-hevc", 1L)  // H.265
                 setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-auto-rotate", 1L)
                 setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-handle-resolution-change", 1L)
             } else {
