@@ -86,8 +86,8 @@ class _HomeScreenState extends State<HomeScreen> {
   String _digitDisplay = '';
   Timer? _digitHideTimer;
 
-  // 焦点控制
-  bool _focusOnGroup = false;
+  // ---------- 新焦点控制 ----------
+  int _focusColumn = 2; // 0=订阅源, 1=分组, 2=频道
 
   DateTime get _beijingNow => EpgParser.beijingNow;
   String _formatTime(DateTime time) => EpgParser.formatBeijingTime(time);
@@ -230,7 +230,6 @@ class _HomeScreenState extends State<HomeScreen> {
     _saveLayoutConfig();
   }
 
-  // ======================== 生命周期 ========================
   @override
   void dispose() {
     _epgInfoHideTimer?.cancel();
@@ -334,7 +333,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _retryChannel = null;
   }
 
-  // ======================== 频道 / 分组切换 ========================
+  // ======================== 频道 / 分组 / 订阅源切换 ========================
   void _switchChannel(Channel ch) {
     _cancelRetry();
     _digitBuffer = '';
@@ -345,7 +344,6 @@ class _HomeScreenState extends State<HomeScreen> {
       currentChannel = ch;
       _selectedIndex = channels.indexOf(ch);
       _updateEpgInfo();
-      _focusOnGroup = false;
     });
 
     _showEpgInfoTemporarily();
@@ -369,7 +367,6 @@ class _HomeScreenState extends State<HomeScreen> {
         currentChannel = channels.first;
         _updateEpgInfo();
         _showEpgInfoTemporarily();
-        _focusOnGroup = false;
       } else {
         _selectedIndex = -1;
         currentChannel = null;
@@ -384,7 +381,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // ======================== 订阅源加载 ========================
   Future<void> _loadSubscriptionData(Subscription sub) async {
     try {
       final url = sub.url;
@@ -604,84 +600,52 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    // ---------- 频道列表模式（含焦点切换） ----------
+    // ---------- 频道列表模式（三列自由移动） ----------
     if (showChannelList && !isScheduleMode) {
-      if (channels.isEmpty) return;
-
+      // 左右切换焦点列
       if (isLeft) {
-        if (!_focusOnGroup) setState(() => _focusOnGroup = true);
+        setState(() {
+          _focusColumn = (_focusColumn - 1 + 3) % 3;
+        });
         return;
       } else if (isRight) {
-        if (_focusOnGroup) setState(() => _focusOnGroup = false);
+        setState(() {
+          _focusColumn = (_focusColumn + 1) % 3;
+        });
         return;
       }
 
+      // 上下键根据焦点列执行操作
       if (isUp) {
-        if (_focusOnGroup) {
-          // 分组列：切换分组
-          if (groups.isNotEmpty) {
-            final currentIdx = groups.indexOf(currentGroup!);
-            final prevIdx = (currentIdx - 1 + groups.length) % groups.length;
-            _switchToGroup(groups[prevIdx]);
-          }
-        } else {
-          // 频道列：上一个频道，边界跳转分组
-          if (_selectedIndex > 0) {
-            setState(() => _selectedIndex--);
-          } else {
-            if (groups.isNotEmpty) {
-              final currentIdx = groups.indexOf(currentGroup!);
-              final prevIdx = (currentIdx - 1 + groups.length) % groups.length;
-              _switchToGroup(groups[prevIdx]);
-              if (channels.isNotEmpty) {
-                setState(() {
-                  _selectedIndex = channels.length - 1;
-                  currentChannel = channels.last;
-                  _updateEpgInfo();
-                  _showEpgInfoTemporarily();
-                });
-              }
-            }
-          }
+        switch (_focusColumn) {
+          case 0: // 订阅源列
+            _moveSubscription(-1);
+            break;
+          case 1: // 分组列
+            _moveGroup(-1);
+            break;
+          case 2: // 频道列
+            _moveChannel(-1);
+            break;
         }
+        return;
       } else if (isDown) {
-        if (_focusOnGroup) {
-          if (groups.isNotEmpty) {
-            final currentIdx = groups.indexOf(currentGroup!);
-            final nextIdx = (currentIdx + 1) % groups.length;
-            _switchToGroup(groups[nextIdx]);
-          }
-        } else {
-          if (_selectedIndex < channels.length - 1) {
-            setState(() => _selectedIndex++);
-          } else {
-            if (groups.isNotEmpty) {
-              final currentIdx = groups.indexOf(currentGroup!);
-              final nextIdx = (currentIdx + 1) % groups.length;
-              _switchToGroup(groups[nextIdx]);
-              if (channels.isNotEmpty) {
-                setState(() {
-                  _selectedIndex = 0;
-                  currentChannel = channels.first;
-                  _updateEpgInfo();
-                  _showEpgInfoTemporarily();
-                });
-              }
-            }
-          }
+        switch (_focusColumn) {
+          case 0:
+            _moveSubscription(1);
+            break;
+          case 1:
+            _moveGroup(1);
+            break;
+          case 2:
+            _moveChannel(1);
+            break;
         }
-      } else if (isOk) {
-        if (_focusOnGroup) {
-          setState(() => _focusOnGroup = false);
-          if (channels.isNotEmpty && currentChannel == null) {
-            _switchChannel(channels.first);
-          }
-        } else {
-          if (_selectedIndex >= 0 && _selectedIndex < channels.length) {
-            _switchChannel(channels[_selectedIndex]);
-          }
-        }
-      } else if (isBack || isMenu) {
+        return;
+      }
+
+      // OK 键退出列表（或可保留其他功能）
+      if (isOk || isBack || isMenu) {
         setState(() => showChannelList = false);
       }
       return;
@@ -690,6 +654,7 @@ class _HomeScreenState extends State<HomeScreen> {
     // ---------- 节目单模式 ----------
     if (isScheduleMode) {
       if (isBack) setState(() => isScheduleMode = false);
+      // 如需支持左右滚动节目单，可在此扩展
       return;
     }
 
@@ -701,54 +666,60 @@ class _HomeScreenState extends State<HomeScreen> {
         _showRightMenu = false;
         _showEpgInfo = false;
         _epgInfoHideTimer?.cancel();
-        _focusOnGroup = false;
+        // 默认焦点在频道列
+        _focusColumn = 2;
       });
     } else if (isBack) {
       setState(() { _showExitMenu = true; _exitMenuSelectedIndex = 0; });
     } else if (isUp) {
-      if (channels.isNotEmpty) {
-        if (_selectedIndex > 0) {
-          setState(() => _selectedIndex--);
-          _switchChannel(channels[_selectedIndex]);
-        } else {
-          if (groups.isNotEmpty) {
-            final currentIdx = groups.indexOf(currentGroup!);
-            final prevIdx = (currentIdx - 1 + groups.length) % groups.length;
-            _switchToGroup(groups[prevIdx]);
-            if (channels.isNotEmpty) {
-              setState(() {
-                _selectedIndex = channels.length - 1;
-                currentChannel = channels.last;
-                _updateEpgInfo();
-                _showEpgInfoTemporarily();
-              });
-            }
-          }
-        }
-      }
+      // 切换上一个频道，边界跳转分组
+      _moveChannel(-1);
     } else if (isDown) {
-      if (channels.isNotEmpty) {
-        if (_selectedIndex < channels.length - 1) {
-          setState(() => _selectedIndex++);
-          _switchChannel(channels[_selectedIndex]);
-        } else {
-          if (groups.isNotEmpty) {
-            final currentIdx = groups.indexOf(currentGroup!);
-            final nextIdx = (currentIdx + 1) % groups.length;
-            _switchToGroup(groups[nextIdx]);
-            if (channels.isNotEmpty) {
-              setState(() {
-                _selectedIndex = 0;
-                currentChannel = channels.first;
-                _updateEpgInfo();
-                _showEpgInfoTemporarily();
-              });
-            }
-          }
+      _moveChannel(1);
+    }
+    // 左右键无操作
+  }
+
+  // ---------- 移动辅助方法 ----------
+  void _moveSubscription(int direction) {
+    final settings = Provider.of<SettingsService>(context, listen: false);
+    final subs = settings.subscriptions;
+    if (subs.isEmpty) return;
+    int currentIdx = subs.indexWhere((s) => s.name == currentSubName);
+    if (currentIdx == -1) currentIdx = 0;
+    int newIdx = (currentIdx + direction) % subs.length;
+    if (newIdx < 0) newIdx += subs.length;
+    _loadSubscriptionData(subs[newIdx]);
+  }
+
+  void _moveGroup(int direction) {
+    if (groups.isEmpty) return;
+    int currentIdx = groups.indexOf(currentGroup!);
+    if (currentIdx == -1) currentIdx = 0;
+    int newIdx = (currentIdx + direction) % groups.length;
+    if (newIdx < 0) newIdx += groups.length;
+    _switchToGroup(groups[newIdx]);
+  }
+
+  void _moveChannel(int direction) {
+    if (channels.isEmpty) return;
+    int newIdx = _selectedIndex + direction;
+    if (newIdx >= 0 && newIdx < channels.length) {
+      _switchChannel(channels[newIdx]);
+    } else {
+      // 边界：切换分组
+      if (groups.isNotEmpty) {
+        int currentGroupIdx = groups.indexOf(currentGroup!);
+        int newGroupIdx = (currentGroupIdx + direction) % groups.length;
+        if (newGroupIdx < 0) newGroupIdx += groups.length;
+        _switchToGroup(groups[newGroupIdx]);
+        // 切换到目标组的首或尾
+        if (channels.isNotEmpty) {
+          int targetIdx = direction > 0 ? 0 : channels.length - 1;
+          _switchChannel(channels[targetIdx]);
         }
       }
     }
-    // 左右键在全屏无操作（可预留快进/快退）
   }
 
   void _executeRightMenuAction(int index) {
@@ -1017,6 +988,8 @@ class _HomeScreenState extends State<HomeScreen> {
                         _showEpgInfo = false;
                         _epgInfoHideTimer?.cancel();
                         _focusNode.requestFocus();
+                        // 默认焦点在频道列
+                        _focusColumn = 2;
                       }
                     });
                   },
@@ -1024,7 +997,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
 
-              // 频道列表 / 节目单
+              // 频道列表（三列）
               if (showChannelList && !isScheduleMode)
                 Positioned(
                   left: 0, top: 0, bottom: 0,
@@ -1033,7 +1006,11 @@ class _HomeScreenState extends State<HomeScreen> {
                     color: Colors.transparent,
                     child: Row(
                       children: [
-                        Expanded(flex: (subWeight * 100).toInt(), child: _buildSubscriptionList()),
+                        // 订阅源列
+                        Expanded(
+                          flex: (subWeight * 100).toInt(),
+                          child: _buildSubscriptionListWithFocus(),
+                        ),
                         _buildDragBar(
                           onDrag: (delta) {
                             setState(() {
@@ -1054,7 +1031,11 @@ class _HomeScreenState extends State<HomeScreen> {
                           },
                           isEditMode: isEditMode,
                         ),
-                        Expanded(flex: (groupWeight * 100).toInt(), child: _buildGroupListWithFocus()),
+                        // 分组列
+                        Expanded(
+                          flex: (groupWeight * 100).toInt(),
+                          child: _buildGroupListWithFocus(),
+                        ),
                         _buildDragBar(
                           onDrag: (delta) {
                             setState(() {
@@ -1075,6 +1056,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           },
                           isEditMode: isEditMode,
                         ),
+                        // 频道列
                         Expanded(
                           flex: (channelWeight * 100).toInt(),
                           child: Stack(
@@ -1113,6 +1095,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
 
+              // 节目单
               if (isScheduleMode)
                 Positioned(
                   left: 0, top: 0, bottom: 0,
@@ -1347,6 +1330,62 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  // ======================== 带焦点指示的列构建 ========================
+  Widget _buildSubscriptionListWithFocus() {
+    return Container(
+      decoration: BoxDecoration(
+        border: _focusColumn == 0 ? Border.all(color: Colors.yellow, width: 2) : null,
+      ),
+      child: Consumer<SettingsService>(
+        builder: (context, settings, _) {
+          final subs = settings.subscriptions;
+          if (subs.isEmpty) {
+            return const Center(child: Text('无订阅源', style: TextStyle(color: Colors.white)));
+          }
+          return ListView.builder(
+            itemCount: subs.length,
+            itemBuilder: (_, index) {
+              final sub = subs[index];
+              final isSelected = currentSubName == sub.name;
+              return ListTile(
+                title: Text(sub.name, style: TextStyle(
+                  color: isSelected ? Colors.yellow : Colors.white,
+                  fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                )),
+                onTap: () => _loadSubscriptionData(sub),
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildGroupListWithFocus() {
+    return Container(
+      decoration: BoxDecoration(
+        border: _focusColumn == 1 ? Border.all(color: Colors.yellow, width: 2) : null,
+      ),
+      child: GroupList(
+        groups: groups,
+        selectedGroup: currentGroup,
+        onSelect: _switchToGroup,
+      ),
+    );
+  }
+
+  Widget _buildChannelListWithFocus() {
+    return Container(
+      decoration: BoxDecoration(
+        border: _focusColumn == 2 ? Border.all(color: Colors.yellow, width: 2) : null,
+      ),
+      child: ListView.builder(
+        itemCount: channels.length,
+        itemBuilder: (context, index) => _buildChannelItem(channels[index], index),
+      ),
+    );
+  }
+
   // ======================== 辅助 UI 组件 ========================
   Widget _buildDragBar({required void Function(double) onDrag, required bool isEditMode}) {
     if (!isEditMode) return const SizedBox.shrink();
@@ -1390,32 +1429,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildSubscriptionList() {
-    return Consumer<SettingsService>(
-      builder: (context, settings, _) {
-        final subs = settings.subscriptions;
-        _hasSubscriptions = subs.isNotEmpty;
-        if (!_hasSubscriptions) {
-          return const Center(child: Text('无订阅源', style: TextStyle(color: Colors.white)));
-        }
-        return ListView.builder(
-          itemCount: subs.length,
-          itemBuilder: (_, index) {
-            final sub = subs[index];
-            final isSelected = currentSubName == sub.name;
-            return ListTile(
-              title: Text(sub.name, style: TextStyle(
-                color: isSelected ? Colors.yellow : Colors.white,
-                fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-              )),
-              onTap: () => _loadSubscriptionData(sub),
-            );
-          },
-        );
-      },
-    );
-  }
-
   Widget _buildGroupList() {
     return GroupList(
       groups: groups,
@@ -1424,35 +1437,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildGroupListWithFocus() {
-    return Container(
-      decoration: BoxDecoration(
-        border: _focusOnGroup ? Border.all(color: Colors.yellow, width: 2) : null,
-      ),
-      child: GroupList(
-        groups: groups,
-        selectedGroup: currentGroup,
-        onSelect: (group) {
-          _switchToGroup(group);
-          setState(() => _focusOnGroup = false);
-        },
-      ),
-    );
-  }
-
-  Widget _buildChannelListWithFocus() {
-    return Container(
-      decoration: BoxDecoration(
-        border: !_focusOnGroup ? Border.all(color: Colors.yellow, width: 2) : null,
-      ),
-      child: ListView.builder(
-        itemCount: channels.length,
-        itemBuilder: (context, index) => _buildChannelItem(channels[index], index),
-      ),
-    );
-  }
-
-  // ======================== 占位对话框 ========================
   void _showAddSubscriptionDialog() {}
   void _showAddEpgDialog() {
     Navigator.push(context, MaterialPageRoute(builder: (_) => SettingsScreen()))
